@@ -1,0 +1,42 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# --- C++ / CMake ---
+build/
+build-*/
+cmake-build-*/
+compile_commands.json
+*.o
+*.so
+mainCV
+
+# вендоренный header nlohmann_json (качается wget'ом, см. CMakeLists)
+cpp/SeeSharp/third_party/
+
+# --- Кросс-сборка / борт ---
+board/mtv3-rv1126/mtv3_cam_daemon
+board/mtv3-rv1126/mtv3_rga_rknn
+*.nv12
+*.raw
+
+# --- NN-артефакты (тяжёлые бинарники; веса храним отдельно/через LFS) ---
+common/models/*.pt
+common/models/*.onnx
+common/models/*.rknn
+dataset.txt
+q_*.jpg
+
+# --- Образы/дистрибутивы ---
+*.img
+*.img.xz
+*.exe
+
+# --- IDE / OS ---
+.idea/
+.vs/
+Thumbs.db
+.DS_Store

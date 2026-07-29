@@ -1,0 +1,50 @@
+# --- MTV3: opencv_contrib/aruco для opencv3 3.3.0 (buildroot 2018.02) ---
+# Применение:
+#   1) wget -O buildroot/dl/opencv_contrib-3.3.0.tar.gz \
+#        https://github.com/opencv/opencv_contrib/archive/3.3.0.tar.gz
+#   2) cat opencv3-aruco.mk.add >> buildroot/package/opencv3/opencv3.mk
+#   3) в defconfig добавить BR2_PACKAGE_OPENCV3_LIB_CALIB3D=y (aruco требует calib3d)
+#   4) пересобрать: make opencv3-dirclean && make opencv3 (или полная сборка rootfs)
+# Проверка на борту: python3 -c "import cv2.aruco; print('aruco ok')"
+
+define OPENCV3_EXTRACT_CONTRIB
+	tar -xzf $(TOPDIR)/dl/opencv_contrib-3.3.0.tar.gz -C $(@D)
+endef
+OPENCV3_POST_EXTRACT_HOOKS += OPENCV3_EXTRACT_CONTRIB
+
+# только aruco; остальные contrib-модули OFF явно (xfeatures2d, например,
+# качает бинарные блобы на этапе cmake и ломает оффлайн-сборку)
+OPENCV3_CONF_OPTS += \
+	-DOPENCV_EXTRA_MODULES_PATH=$(@D)/opencv_contrib-3.3.0/modules \
+	-DBUILD_opencv_aruco=ON \
+	-DBUILD_opencv_bgsegm=OFF \
+	-DBUILD_opencv_bioinspired=OFF \
+	-DBUILD_opencv_ccalib=OFF \
+	-DBUILD_opencv_cnn_3dobj=OFF \
+	-DBUILD_opencv_cvv=OFF \
+	-DBUILD_opencv_datasets=OFF \
+	-DBUILD_opencv_dnn_modern=OFF \
+	-DBUILD_opencv_dpm=OFF \
+	-DBUILD_opencv_face=OFF \
+	-DBUILD_opencv_freetype=OFF \
+	-DBUILD_opencv_fuzzy=OFF \
+	-DBUILD_opencv_hdf=OFF \
+	-DBUILD_opencv_img_hash=OFF \
+	-DBUILD_opencv_line_descriptor=OFF \
+	-DBUILD_opencv_matlab=OFF \
+	-DBUILD_opencv_optflow=OFF \
+	-DBUILD_opencv_phase_unwrapping=OFF \
+	-DBUILD_opencv_plot=OFF \
+	-DBUILD_opencv_reg=OFF \
+	-DBUILD_opencv_rgbd=OFF \
+	-DBUILD_opencv_saliency=OFF \
+	-DBUILD_opencv_sfm=OFF \
+	-DBUILD_opencv_stereo=OFF \
+	-DBUILD_opencv_structured_light=OFF \
+	-DBUILD_opencv_surface_matching=OFF \
+	-DBUILD_opencv_text=OFF \
+	-DBUILD_opencv_tracking=OFF \
+	-DBUILD_opencv_xfeatures2d=OFF \
+	-DBUILD_opencv_ximgproc=OFF \
+	-DBUILD_opencv_xobjdetect=OFF \
+	-DBUILD_opencv_xphoto=OFF

@@ -1,0 +1,52 @@
+#!/bin/sh
+# S60mtv3 — автостарт камерного тракта MTV3 (MP без ISPP) + SeeSharpPy.
+# В overlay: /etc/init.d/S60mtv3 (chmod +x). Требует: /usr/bin/mtv3_cam_daemon,
+# /usr/bin/init_mp.sh, /opt/seesharp/{mainCV,config.json} (C++ SeeSharp, MTV3_BOARD).
+#
+# CV-разрешение: сенсор работает 2112x1568, mainpath-resizer отдаёт CV_W x CV_H.
+
+SENSOR_W=2112
+SENSOR_H=1568
+CV_W=1056
+CV_H=784
+DAEMON_ARGS="--shm --ccm auto -s 108 --hz 50 -w $CV_W -h $CV_H"
+APP_DIR=/opt/seesharp
+LOG=/tmp/mtv3
+
+respawn() { # $1=имя  $2...=команда
+    n=$1; shift
+    while true; do
+        "$@" >>"$LOG.$n.log" 2>&1
+        echo "$(date) $n exited ($?), respawn in 2s" >>"$LOG.$n.log"
+        sleep 2
+    done
+}
+
+start() {
+    # штатный UVC/aiq-стек не должен трогать камеру
+    killall ispserver aiserver uvc_app rkisp_demo 2>/dev/null
+
+    init_mp.sh $SENSOR_W $SENSOR_H >"$LOG.init.log" 2>&1
+
+    respawn cam /usr/bin/mtv3_cam_daemon $DAEMON_ARGS &
+    echo $! > /var/run/mtv3_cam.pid
+
+    if [ -x "$APP_DIR/mainCV" ]; then
+        ( cd "$APP_DIR" && respawn app ./mainCV ) &
+        echo $! > /var/run/mtv3_app.pid
+    fi
+}
+
+stop() {
+    for p in /var/run/mtv3_app.pid /var/run/mtv3_cam.pid; do
+        [ -f $p ] && kill "$(cat $p)" 2>/dev/null && rm -f $p
+    done
+    killall mtv3_cam_daemon 2>/dev/null
+}
+
+case "$1" in
+    start) start ;;
+    stop) stop ;;
+    restart) stop; sleep 1; start ;;
+    *) echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

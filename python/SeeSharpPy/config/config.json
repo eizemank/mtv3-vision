@@ -1,0 +1,330 @@
+{
+    "blob_detection": {
+      "enable_one_color_detection": true,
+      "enable_multicolor_detection": true,
+      "one_color_patterns":
+      [
+        {
+          "id": 0,
+          "min_area": 300.0,
+          "max_area": 50000.0,
+          "min_width": 10,
+          "min_height": 10,
+          "lower_range": [0, 173, 96],
+          "upper_range": [255, 200, 128],
+          "min_luminance": 0,
+          "max_luminance": 255,
+          "min_chrominance_red" : 191,
+          "max_chrominance_red" : 215,
+          "min_chrominance_blue" : 79,
+          "max_chrominance_blue" : 94,
+          "min_circularity": 0.0,
+          "max_circularity": 1.0,
+          "min_inertia": 0.0,
+          "max_inertia": 1.0,
+          "min_convexity": 0.0,
+          "max_convexity": 1.0
+        },
+        {
+          "id": 1,
+          "min_area": 300.0,
+          "max_area": 50000.0,
+          "min_width": 10,
+          "min_height": 10,
+          "lower_range": [0, 67, 123],
+          "upper_range": [255, 95, 138],
+          "min_luminance": 0,
+          "max_luminance": 255,
+          "min_chrominance_red" : 191,
+          "max_chrominance_red" : 215,
+          "min_chrominance_blue" : 79,
+          "max_chrominance_blue" : 94,
+          "min_circularity": 0.0,
+          "max_circularity": 1.0,
+          "min_inertia": 0.0,
+          "max_inertia": 1.0,
+          "min_convexity": 0.0,
+          "max_convexity": 1.0
+        },
+        {
+          "id": 2,
+          "min_area": 300.0,
+          "max_area": 50000.0,
+          "min_width": 10,
+          "min_height": 10,
+          "lower_range": [0, 84, 163],
+          "upper_range": [255, 143, 200],
+          "min_circularity": 0.0,
+          "max_circularity": 1.0,
+          "min_inertia": 0.0,
+          "max_inertia": 1.0,
+          "min_convexity": 0.0,
+          "max_convexity": 1.0
+        }
+      ],
+      "multicolor_patterns":
+      [
+        {
+          "id": 0,
+          "overall_threshold": 0.50,
+          "size_measure": "area",
+          "nodes":
+          [
+            {
+              "id": 0,
+              "blob_id": [0],
+              "threshold": 0.06,
+              "weight": 255,
+              "size": 
+              {
+                "min": 0.0,
+                "max": 5000.0,
+                "goal": 350.0,
+                "weight": 255
+              },
+              "circularity":
+              {
+                "min": 0.0,
+                "max": 1.0,
+                "goal": 0.5,
+                "weight": 0
+              },
+              "inertia":
+              {
+                "min": 0.0,
+                "max": 1.0,
+                "goal": 0.5,
+                "weight": 0
+              },
+              "convexity":
+              {
+                "min": 0.0,
+                "max": 1.0,
+                "goal": 0.5,
+                "weight": 0
+              },
+              "angle":
+              {
+                "min": 0.0,
+                "max": 180.0,
+                "goal": 45.0,
+                "weight": 0
+              }
+            },
+            {
+              "id": 1,
+              "blob_id": [1],
+              "threshold": 0.01,
+              "weight": 255,
+              "size": 
+              {
+                "min": 0.0,
+                "max": 5000.0,
+                "goal": 350.0,
+                "weight": 255
+              },
+              "circularity":
+              {
+                "min": 0.0,
+                "max": 1.0,
+                "goal": 0.5,
+                "weight": 0
+              },
+              "inertia":
+              {
+                "min": 0.0,
+                "max": 1.0,
+                "goal": 0.5,
+                "weight": 0
+              },
+              "convexity":
+              {
+                "min": 0.0,
+                "max": 1.0,
+                "goal": 0.5,
+                "weight": 0
+              },
+              "angle":
+              {
+                "min": -180.0,
+                "max": 180.0,
+                "goal": 45.0,
+                "weight": 0
+              }
+            },
+            {
+              "id": 2,
+              "blob_id": [2],
+              "threshold": 0.06,
+              "weight": 255,
+              "size": 
+              {
+                "min": 0.0,
+                "max": 5000.0,
+                "goal": 350.0,
+                "weight": 255
+              },
+              "circularity":
+              {
+                "min": 0.0,
+                "max": 1.0,
+                "goal": 0.5,
+                "weight": 0
+              },
+              "inertia":
+              {
+                "min": 0.0,
+                "max": 1.0,
+                "goal": 0.5,
+                "weight": 0
+              },
+              "convexity":
+              {
+                "min": 0.0,
+                "max": 1.0,
+                "goal": 0.5,
+                "weight": 0
+              },
+              "angle":
+              {
+                "min": 0.0,
+                "max": 180.0,
+                "goal": 45.0,
+                "weight": 0
+              }
+            }
+          ],
+          "links":
+          [
+            {
+              "id": "0-1",
+              "threshold": 0.86,
+              "weight": 255,
+              "length_absolute":
+              {
+                "min": 0.0,
+                "max": 100000.0,
+                "goal": 350.0,
+                "weight": 0
+              },
+              "length_relative":
+              {
+                "min": 0.0,
+                "max": 10000.0,
+                "goal": 0.5,
+                "weight": 0
+              },
+              "angle_absolute":
+              {
+                "min": 0.0,
+                "max": 180.0,
+                "goal": 135.0,
+                "weight": 255
+              },
+              "angle_relative":
+              {
+                "min": -180.0,
+                "max": 180.0,
+                "goal": 37.0,
+                "weight": 0
+              }
+            },
+            {
+              "id": "1-2",
+              "threshold": 0.86,
+              "weight": 255,
+              "length_absolute":
+              {
+                "min": 0.0,
+                "max": 100000.0,
+                "goal": 350.0,
+                "weight": 0
+              },
+              "length_relative":
+              {
+                "min": 0.0,
+                "max": 10000.0,
+                "goal": 0.5,
+                "weight": 0
+              },
+              "angle_absolute":
+              {
+                "min": 0.0,
+                "max": 180.0,
+                "goal": 90.0,
+                "weight": 255
+              },
+              "angle_relative":
+              {
+                "min": -180.0,
+                "max": 180.0,
+                "goal": 37.0,
+                "weight": 0
+              }
+            },
+            {
+              "id": "0-2",
+              "threshold": 0.86,
+              "weight": 255,
+              "length_absolute":
+              {
+                "min": 0.0,
+                "max": 100000.0,
+                "goal": 350.0,
+                "weight": 0
+              },
+              "length_relative":
+              {
+                "min": 0.0,
+                "max": 10000.0,
+                "goal": 0.5,
+                "weight": 0
+              },
+              "angle_absolute":
+              {
+                "min": 0.0,
+                "max": 180.0,
+                "goal": 170.0,
+                "weight": 255
+              },
+              "angle_relative":
+              {
+                "min": -180.0,
+                "max": 180.0,
+                "goal": 37.0,
+                "weight": 0
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "line_detection":
+    {
+      "canny_threshold1": 50.0,
+      "canny_threshold2": 150.0,
+      "canny_aperture_size": 3,
+      "canny_l2_gradient": false,
+      "hough_rho": 1.0,
+      "hough_theta": 0.017453292519943295,
+      "hough_threshold": 50,
+      "hough_min_line_length": 30.0,
+      "hough_max_line_gap": 10.0
+    },
+    "circle_detection": {
+      "min_radius": 10.0,
+      "max_radius": 200.0,
+      "hough_param1": 100.0,
+      "hough_param2": 50.0,
+      "distance": 20
+    },
+    "aruco_detection": {
+      "dictionary": "DICT_4X4_50",
+      "marker_length": 0.05
+    },
+    "general_params":
+    {
+      "processing_mode": "aruco_detection",
+      "debug_mode": true
+    }
+}
