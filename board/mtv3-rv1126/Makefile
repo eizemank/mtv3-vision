@@ -8,16 +8,28 @@ OUT     ?= $(SDK)/buildroot/output/rockchip_rv1126_rv1109_mtv3
 CC      := $(OUT)/host/bin/arm-linux-gnueabihf-gcc
 SYSROOT := $(OUT)/staging
 
-# если rkisp2-config.h не попал в sysroot — берём напрямую из ядра
-UAPI    := $(shell test -f $(SYSROOT)/usr/include/linux/rkisp2-config.h || echo -I$(SDK)/kernel/include/uapi)
+# если rkisp2-config.h не попал в sysroot — локальная копия ТОЛЬКО этого
+# заголовка (весь kernel/include/uapi в -I нельзя: его videodev2.h тянет
+# linux/compiler.h, которого нет в юзерспейсе)
+NEED_INC := $(shell test -f $(SYSROOT)/usr/include/linux/rkisp2-config.h || echo yes)
+UAPI     := $(if $(NEED_INC),-Iinc)
 
 CFLAGS  := -O2 -Wall $(UAPI)
 LDLIBS  := -lm
 
 all: mtv3_cam_daemon
 
-mtv3_cam_daemon: mtv3_cam_daemon.c
+inc/linux/rkisp2-config.h:
+	mkdir -p inc/linux
+	cp $(SDK)/kernel/include/uapi/linux/rkisp2-config.h $@
+
+mtv3_cam_daemon: mtv3_cam_daemon.c $(if $(NEED_INC),inc/linux/rkisp2-config.h)
 	$(CC) $(CFLAGS) -o $@ $< $(LDLIBS)
+
+# отладочный MJPEG-сервер (кадры от mainCV --dump по RNDIS)
+httpd: mtv3_httpd
+mtv3_httpd: mtv3_httpd.c
+	$(CC) -O2 -Wall -o $@ $<
 
 # rknpu ставится свежей сборкой в buildroot/output (не в output/rockchip_*):
 RKNN_SYS ?= $(SDK)/buildroot/output/host/arm-buildroot-linux-gnueabihf/sysroot

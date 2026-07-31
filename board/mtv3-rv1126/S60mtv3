@@ -26,6 +26,14 @@ start() {
     # штатный UVC/aiq-стек не должен трогать камеру
     killall ispserver aiserver uvc_app rkisp_demo 2>/dev/null
 
+    # NPU: PVTM просит 950 мВ (934 МГц), окно PWM-регулятора 710-858 мВ —
+    # фиксируем частоту в пределах окна, иначе OPP-notifier спамит -22
+    NPU_DF=/sys/class/devfreq/ffbc0000.npu
+    if [ -d "$NPU_DF" ]; then
+        echo userspace > "$NPU_DF/governor" 2>/dev/null
+        echo 600000000 > "$NPU_DF/userspace/set_freq" 2>/dev/null
+    fi
+
     init_mp.sh $SENSOR_W $SENSOR_H >"$LOG.init.log" 2>&1
 
     respawn cam /usr/bin/mtv3_cam_daemon $DAEMON_ARGS &

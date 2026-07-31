@@ -7,7 +7,9 @@
 // imshow + запись combined.avi (TEST CODE).
 
 #include <chrono>
+#include <cstring>
 #include <iostream>
+#include <string>
 
 #include <opencv2/opencv.hpp>
 
@@ -23,8 +25,20 @@
 
 constexpr const char* CONFIG_PATH = "config.json";
 
-int main()
+int main(int argc, char** argv)
 {
+    // --dump N [--dump-dir D]: каждые N кадров сохранять D/last.jpg (результат)
+    // и D/last_src.jpg (исходник); файлы перезаписываются — tmpfs не растёт
+    int dumpEvery = 0;
+    std::string dumpDir = "/tmp";
+    for (int i = 1; i < argc; ++i)
+    {
+        if (!strcmp(argv[i], "--dump") && i + 1 < argc)
+            dumpEvery = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--dump-dir") && i + 1 < argc)
+            dumpDir = argv[++i];
+    }
+
     // 1. Конфиг
     ConfigReader reader;
     if (!reader.loadFromFile(CONFIG_PATH))
@@ -60,7 +74,21 @@ int main()
     auto t0 = std::chrono::steady_clock::now();
     long frames = 0;
     Pipeline pipeline(source, manager, [&](const ProcessedItem& item) {
-        if (++frames % 100 == 0)
+        ++frames;
+        if (!item.metadata.empty() && frames % 10 == 0)
+        {
+            std::cout << "det f" << frames << ":";
+            for (const auto& m : item.metadata)
+                std::cout << " id=" << m.id
+                          << "(" << (int)m.center.x << "," << (int)m.center.y << ")";
+            std::cout << std::endl;
+        }
+        if (dumpEvery && frames % dumpEvery == 0)
+        {
+            cv::imwrite(dumpDir + "/last.jpg", item.result);
+            cv::imwrite(dumpDir + "/last_src.jpg", item.frame);
+        }
+        if (frames % 100 == 0)
         {
             auto now = std::chrono::steady_clock::now();
             double dt = std::chrono::duration<double>(now - t0).count();
