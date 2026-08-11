@@ -72,6 +72,12 @@ not the CM5; use the CM5 IP address. Verify the local server with:
 curl http://127.0.0.1:8081/config
 ```
 
+If libcamera reports `Camera frontend has timed out`, reproduce it without
+SeeSharp using `rpicam-vid -t 0`. The timeout comes from the CSI camera path:
+power down the CM5, reseat both ends of the FFC cable with the contacts in the
+correct orientation, verify the CAM0/CAM1 connector and try another cable or
+sensor. SeeSharp automatically reopens the V4L2 stream after a read timeout.
+
 ## Autostart
 
 Install the binary, config and optional ONNX model, then enable the supplied

@@ -129,7 +129,7 @@ details details>summary{font-weight:normal;color:#9bd}
 .hint{color:#666;font-size:12px}
 </style></head><body>
 <h3>SeeSharp vision</h3>
-<img id="v" alt="нет потока :8080 — запущен ли mtv3_httpd и mainCV --dump?"><br>
+<img id="v" alt="preview is not ready"><br>
 <div id="modes"></div>
 <h4>Параметры <span class="hint">(секция активного режима + общие)</span></h4>
 <div><label class="hint"><input type="checkbox" id="all" onchange="render()"> показать все секции</label>
@@ -364,7 +364,7 @@ static void controlServer(int port)
                 sendResp(c, "text/plain", std::string("error: ") + e.what() + "\n");
             }
         }
-        else if (req.compare(0, 17, "GET /preview.jpg ") == 0)
+        else if (req.compare(0, 16, "GET /preview.jpg") == 0)
         {
             std::string jpeg;
             if (getPreviewJpeg(jpeg))
