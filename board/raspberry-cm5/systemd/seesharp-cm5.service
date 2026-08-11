@@ -1,0 +1,14 @@
+[Unit]
+Description=SeeSharp vision pipeline for Raspberry Pi CM5
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/seesharp
+ExecStart=/usr/bin/libcamerify /opt/seesharp/mainCV --camera 0 --config /opt/seesharp/config.json --dump 10 --dump-dir /tmp/seesharp
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

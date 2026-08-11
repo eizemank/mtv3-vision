@@ -30,7 +30,8 @@ def main():
 
     rknn = RKNN(verbose=False)
     rknn.config(
-        channel_mean_value="0 0 0 255",   # (x - 0)/255
+        mean_values=[[0, 0, 0]],          # (x - 0)/255
+        std_values=[[255, 255, 255]],
         reorder_channel="0 1 2",          # вход уже RGB — не переставлять
         target_platform=["rv1126"],       # без этого rknn_init -13 на борту!
         quantized_dtype="asymmetric_quantized-u8",
@@ -39,11 +40,13 @@ def main():
     if rknn.load_onnx(model=onnx) != 0:
         sys.exit("load_onnx failed")
 
-    ret = rknn.build(do_quantization=dataset is not None, dataset=dataset)
+    if dataset:
+        ret = rknn.build(do_quantization=True, dataset=dataset)
+    else:
+        ret = rknn.build(do_quantization=False)
+        print("WARN: без квантования (fp16) — медленнее на NPU; дайте dataset.txt")
     if ret != 0:
         sys.exit("build failed")
-    if dataset is None:
-        print("WARN: без квантования (fp16) — медленнее на NPU; дайте dataset.txt")
 
     if rknn.export_rknn(out) != 0:
         sys.exit("export failed")

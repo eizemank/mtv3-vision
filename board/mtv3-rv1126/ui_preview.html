@@ -1,0 +1,255 @@
+<!doctype html><html><head><meta charset="utf-8">
+<title>MTV3 vision</title><style>
+body{font-family:sans-serif;background:#111;color:#eee;margin:12px;max-width:1100px}
+button{margin:2px;padding:6px 12px;background:#333;color:#eee;border:1px solid #555;cursor:pointer}
+button:hover{background:#464}
+button.act{background:#464;border-color:#7a7}
+textarea{width:100%;height:320px;background:#181818;color:#9e9;font-family:monospace;font-size:12px}
+img{max-width:100%;border:1px solid #444}#st{margin-left:10px;color:#fb0}
+#bar{background:#1a1a1a;border:1px solid #444;padding:6px 10px;margin-bottom:10px;font-size:13px;color:#bbb}
+#bar input{background:#222;color:#eee;border:1px solid #555;padding:3px 6px;width:130px}
+canvas{max-width:100%;border:1px solid #444;display:block}
+details{border:1px solid #383838;margin:6px 0;background:#161616}
+details>summary{padding:5px 8px;cursor:pointer;background:#1e1e1e;color:#cda;font-weight:bold}
+details details>summary{font-weight:normal;color:#9bd}
+.body{padding:4px 10px 8px}
+.row{display:flex;align-items:center;gap:8px;padding:2px 0}
+.row label{flex:0 0 260px;color:#bbb;font-size:13px}
+.row input[type=text],.row input[type=number]{background:#222;color:#eee;border:1px solid #555;padding:3px 6px;width:190px}
+.row input:focus{border-color:#7a7;outline:none}
+.hint{color:#666;font-size:12px}
+</style></head><body>
+
+<div id="bar">
+  Автономная копия интерфейса mainCV (:8081). Превью и поля работают локально, без платы.
+  &nbsp; IP платы: <input id="ip" value="172.16.110.10" placeholder="172.16.110.10">
+  <button onclick="live()">Подключиться к плате</button>
+  <span id="lst"></span>
+</div>
+
+<h3>MTV3 vision</h3>
+<img id="v" style="display:none" alt="нет потока :8080 — запущен ли mtv3_httpd и mainCV --dump?">
+<canvas id="sim" width="1056" height="784"></canvas><br>
+<div id="modes"></div>
+
+<h4>Параметры <span class="hint">(секция активного режима + общие)</span></h4>
+<div><label class="hint"><input type="checkbox" id="all" onchange="render()"> показать все секции</label>
+&nbsp;<label class="hint"><input type="checkbox" id="raw" onchange="render()"> редактировать JSON</label></div>
+<div id="form"></div>
+<textarea id="cfg" spellcheck="false" style="display:none"></textarea><br>
+<button onclick="send('/apply')">Применить (до перезапуска)</button>
+<button onclick="send('/config')">Сохранить (постоянно)</button>
+<button onclick="revert()">Откатить к сохранённому</button><span id="st"></span>
+
+<script>
+const modes=['aruco_detection','classification','blob_detection','line_detection','circle_detection'];
+const md=document.getElementById('modes');
+let host=null;                       // null = автономный режим (симуляция)
+let cur='aruco_detection';
+let cfgObj={};                       // текущий конфиг (объект)
+let saved={};                        // «сохранённая» копия (эмуляция файла)
+
+// ---- демо-конфиг: копия sw/common/config/config.json (правимые секции)
+const demoCfg={
+  blob_detection:{enable_one_color_detection:true,enable_multicolor_detection:true,
+    one_color_patterns:[{id:0,min_area:300.0,max_area:50000.0,min_width:10,min_height:10,
+      lower_range:[0,173,96],upper_range:[255,200,128],min_circularity:0.0,max_circularity:1.0,
+      min_inertia:0.0,max_inertia:1.0,min_convexity:0.0,max_convexity:1.0}]},
+  line_detection:{canny_threshold1:50.0,canny_threshold2:150.0,canny_aperture_size:3,
+    canny_l2_gradient:false,hough_rho:1.0,hough_theta:0.017453292519943295,
+    hough_threshold:50,hough_min_line_length:30.0,hough_max_line_gap:10.0},
+  circle_detection:{min_radius:10.0,max_radius:200.0,hough_param1:100.0,
+    hough_param2:50.0,distance:20},
+  aruco_detection:{dictionary:"DICT_4X4_50",marker_length:0.05},
+  classification:{model_onnx:"simple_classifier.onnx",model_rknn:"simple_classifier.rknn",
+    input_size:64,score_threshold:0.5,class_names:["background","target"]},
+  general_params:{processing_mode:"aruco_detection",debug_mode:true}
+};
+
+modes.forEach(m=>{const b=document.createElement('button');b.textContent=m;b.dataset.m=m;
+  b.onclick=()=>setMode(m);md.appendChild(b);});
+function mark(){[...md.children].forEach(b=>b.className=b.dataset.m===cur?'act':'');}
+
+// ================== генерация полей из json ==================
+function el(t,c){const e=document.createElement(t);if(c)e.className=c;return e;}
+
+function fieldRow(key,val,path){
+  const r=el('div','row'), l=el('label');
+  l.textContent=key; r.appendChild(l);
+  let i;
+  if(typeof val==='boolean'){
+    i=el('input');i.type='checkbox';i.checked=val;i.dataset.t='b';
+  }else if(typeof val==='number'){
+    i=el('input');i.type='number';i.value=val;i.dataset.t='n';
+    i.step=Number.isInteger(val)?'1':'any';
+  }else if(Array.isArray(val)){
+    i=el('input');i.type='text';i.value=val.join(', ');i.dataset.t='a';
+    i.dataset.num=val.every(x=>typeof x==='number')?'1':'0';
+  }else{
+    i=el('input');i.type='text';i.value=val;i.dataset.t='s';
+  }
+  i.dataset.path=JSON.stringify(path);
+  r.appendChild(i);
+  return r;
+}
+
+function buildForm(obj,path,parent,open){
+  for(const k of Object.keys(obj)){
+    const v=obj[k], p=path.concat([k]);
+    const isObj=v&&typeof v==='object'&&!Array.isArray(v);
+    const isObjArr=Array.isArray(v)&&v.some(x=>x&&typeof x==='object');
+    if(isObj||isObjArr){
+      const d=el('details'); if(open)d.open=true;
+      const s=el('summary'); s.textContent=k+(isObjArr?' ['+v.length+']':''); d.appendChild(s);
+      const b=el('div','body'); d.appendChild(b);
+      if(isObj) buildForm(v,p,b,false);
+      else v.forEach((item,idx)=>{
+        if(item&&typeof item==='object'){
+          const dd=el('details'), ss=el('summary');
+          ss.textContent='['+idx+']'+(item.id!==undefined?'  id='+item.id:'');
+          dd.appendChild(ss);
+          const bb=el('div','body'); dd.appendChild(bb);
+          buildForm(item,p.concat([idx]),bb,false);
+          b.appendChild(dd);
+        }else b.appendChild(fieldRow('['+idx+']',item,p.concat([idx])));
+      });
+      parent.appendChild(d);
+    }else parent.appendChild(fieldRow(k,v,p));
+  }
+}
+
+function render(){
+  const rawMode=document.getElementById('raw').checked;
+  document.getElementById('cfg').style.display=rawMode?'':'none';
+  document.getElementById('form').style.display=rawMode?'none':'';
+  if(rawMode){document.getElementById('cfg').value=JSON.stringify(cfgObj,null,2);return;}
+  const showAll=document.getElementById('all').checked;
+  const f=document.getElementById('form'); f.innerHTML='';
+  const keys=Object.keys(cfgObj).filter(k=>showAll||k===cur||k==='general_params');
+  const sub={}; keys.forEach(k=>sub[k]=cfgObj[k]);
+  buildForm(sub,[],f,true);
+}
+
+// собрать значения полей обратно в объект
+function collect(){
+  const o=JSON.parse(JSON.stringify(cfgObj));
+  document.querySelectorAll('[data-path]').forEach(i=>{
+    const p=JSON.parse(i.dataset.path);
+    let t=o; for(let k=0;k<p.length-1;k++) t=t[p[k]];
+    const last=p[p.length-1];
+    if(i.dataset.t==='b') t[last]=i.checked;
+    else if(i.dataset.t==='n') t[last]=parseFloat(i.value);
+    else if(i.dataset.t==='a'){
+      const parts=i.value.split(',').map(s=>s.trim()).filter(s=>s!=='');
+      t[last]=i.dataset.num==='1'?parts.map(Number):parts;
+    }else t[last]=i.value;
+  });
+  return o;
+}
+
+// ================== режимы / загрузка / сохранение ==================
+function setMode(m){
+  if(host){fetch('http://'+host+':8081/mode/'+m).then(r=>r.text())
+      .then(t=>{st.textContent=t;cur=m;mark();load();})
+      .catch(e=>st.textContent='нет связи: '+e);return;}
+  cur=m;cfgObj.general_params.processing_mode=m;
+  st.textContent='mode='+m;mark();render();
+}
+
+function load(){
+  if(host){fetch('http://'+host+':8081/config').then(r=>r.json())
+      .then(j=>{cfgObj=j;cur=j.general_params?.processing_mode||cur;mark();render();})
+      .catch(e=>st.textContent='нет связи: '+e);return;}
+  cfgObj=JSON.parse(JSON.stringify(demoCfg));
+  if(!saved.general_params)saved=JSON.parse(JSON.stringify(demoCfg));
+  mark();render();
+}
+
+function current(){
+  if(document.getElementById('raw').checked){
+    try{return JSON.parse(document.getElementById('cfg').value);}
+    catch(e){st.textContent='невалидный json: '+e.message;return null;}
+  }
+  return collect();
+}
+// ep: '/apply' — только в память до перезапуска, '/config' — запись в файл
+function send(ep){
+  const o=current(); if(!o)return;
+  cfgObj=o; cur=o.general_params?.processing_mode||cur; mark();
+  if(host){fetch('http://'+host+':8081'+ep,{method:'POST',body:JSON.stringify(o,null,2)})
+      .then(r=>r.text()).then(t=>{st.textContent=t;if(ep==='/config')load();})
+      .catch(e=>st.textContent='нет связи: '+e);return;}
+  if(ep==='/config'){saved=JSON.parse(JSON.stringify(o));
+    st.textContent='сохранено (действует после перезапуска) [локально]';}
+  else st.textContent='применено (до перезапуска) [локально]';
+  render();
+}
+function revert(){
+  if(host){fetch('http://'+host+':8081/revert').then(r=>r.text())
+      .then(t=>{st.textContent=t;load();}).catch(e=>st.textContent='нет связи: '+e);return;}
+  cfgObj=JSON.parse(JSON.stringify(saved));
+  cur=cfgObj.general_params?.processing_mode||cur;mark();render();
+  st.textContent='восстановлен сохранённый конфиг [локально]';
+}
+
+function live(){
+  host=document.getElementById('ip').value.trim();
+  document.getElementById('sim').style.display='none';
+  const v=document.getElementById('v');
+  v.style.display='';v.src='http://'+host+':8080/';
+  document.getElementById('lst').textContent=' → живой режим ('+host+')';
+  load();
+}
+
+// ================== симуляция превью ==================
+const cv=document.getElementById('sim'),cx=cv.getContext('2d');
+let t=0;
+function scene(){
+  cx.fillStyle='#243040';cx.fillRect(0,0,cv.width,cv.height);
+  const g=cx.createRadialGradient(300,180,20,300,180,600);
+  g.addColorStop(0,'rgba(255,240,210,.30)');g.addColorStop(1,'rgba(0,0,0,0)');
+  cx.fillStyle=g;cx.fillRect(0,0,cv.width,cv.height);
+  cx.fillStyle='#6b5a44';cx.fillRect(80,430,420,354);
+  cx.fillStyle='#4a5b6b';cx.fillRect(700,120,260,470);
+  cx.strokeStyle='#8fa';cx.lineWidth=3;
+  cx.beginPath();cx.moveTo(120,700);cx.lineTo(950,560);cx.stroke();
+  cx.beginPath();cx.arc(830,660,55,0,6.283);cx.stroke();
+  cx.fillStyle='#c33';cx.beginPath();cx.arc(240,300,42,0,6.283);cx.fill();
+}
+function marker(x,y,s,a){
+  cx.save();cx.translate(x,y);cx.rotate(a);
+  cx.fillStyle='#fff';cx.fillRect(-s/2,-s/2,s,s);
+  cx.fillStyle='#000';const c=s/6;
+  for(let i=0;i<6;i++)for(let j=0;j<6;j++){
+    const edge=i==0||j==0||i==5||j==5;
+    if(edge||((i*7+j*3+((i*j)%3))%2))cx.fillRect(-s/2+j*c,-s/2+i*c,c,c);}
+  cx.restore();
+}
+function draw(){
+  t+=0.02;scene();
+  const mx=520+Math.sin(t)*120,my=330+Math.cos(t*.7)*60,ang=Math.sin(t*.5)*0.25;
+  marker(mx,my,150,ang);
+  cx.lineWidth=3;cx.font='20px sans-serif';
+  if(cur==='aruco_detection'){
+    cx.strokeStyle='#0f0';cx.save();cx.translate(mx,my);cx.rotate(ang);
+    cx.strokeRect(-75,-75,150,150);cx.restore();
+    cx.fillStyle='#0f0';cx.fillText('id=7',mx-20,my-90);
+  }else if(cur==='classification'){
+    cx.fillStyle='#0dc';cx.font='28px sans-serif';cx.fillText('target 0.92',12,36);
+  }else if(cur==='blob_detection'){
+    cx.strokeStyle='#fff';cx.beginPath();cx.arc(240,300,44,0,6.283);cx.stroke();
+    cx.fillStyle='#fff';cx.fillText('area=5541',180,240);
+  }else if(cur==='line_detection'){
+    cx.strokeStyle='#fff';cx.beginPath();cx.moveTo(120,700);cx.lineTo(950,560);cx.stroke();
+    cx.fillStyle='#fff';cx.fillText('lines=1',20,760);
+  }else if(cur==='circle_detection'){
+    cx.strokeStyle='#0f0';cx.beginPath();cx.arc(830,660,55,0,6.283);cx.stroke();
+    cx.fillStyle='#f00';cx.beginPath();cx.arc(830,660,4,0,6.283);cx.fill();
+  }
+  cx.fillStyle='rgba(0,0,0,.5)';cx.fillRect(cv.width-250,cv.height-40,240,30);
+  cx.fillStyle='#fb0';cx.font='16px monospace';
+  cx.fillText('СИМУЛЯЦИЯ · 1056x784',cv.width-240,cv.height-18);
+  requestAnimationFrame(draw);
+}
+load();draw();
+</script></body></html>

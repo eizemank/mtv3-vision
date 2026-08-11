@@ -9,6 +9,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 #   cmake -DCMAKE_TOOLCHAIN_FILE=<...>/board/mtv3-rv1126/toolchain-rv1126.cmake \
 #         -DMTV3_BOARD=ON ..
 option(MTV3_BOARD "Build for MTV3 board (ShmSource + headless)" OFF)
+option(RASPBERRY_CM5 "Build for Raspberry Pi Compute Module 5 (V4L2 + headless)" OFF)
+
+if(MTV3_BOARD AND RASPBERRY_CM5)
+    message(FATAL_ERROR "MTV3_BOARD and RASPBERRY_CM5 cannot be enabled together")
+endif()
 
 find_package(OpenCV REQUIRED)
 find_package(Threads REQUIRED)
@@ -56,6 +61,10 @@ target_link_libraries(mainCV PRIVATE ${OpenCV_LIBS}
 target_include_directories(mainCV PRIVATE
     ${OpenCV_INCLUDE_DIRS}
     ${CMAKE_SOURCE_DIR}/include)
+
+if(RASPBERRY_CM5)
+    target_compile_definitions(mainCV PRIVATE RASPBERRY_CM5)
+endif()
 
 # конфиг: единый sw/common/config/config.json; локальный config/ — fallback
 set(COMMON_CONFIG ${CMAKE_SOURCE_DIR}/../../common/config/config.json)

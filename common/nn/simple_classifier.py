@@ -111,8 +111,21 @@ def export():
     net, classes = load_net()
     MODELS.mkdir(parents=True, exist_ok=True)
     dummy = torch.zeros(1, 3, INPUT, INPUT)
-    torch.onnx.export(net, dummy, str(ONNX), opset_version=10,
-                      input_names=["input"], output_names=["logits"])
+    kwargs = dict(opset_version=10,
+                  input_names=["input"], output_names=["logits"])
+    # torch>=2.6 по умолчанию экспортирует dynamo-экспортёром (opset 18,
+    # НЕ уважает opset_version) — rknn-toolkit 1.6.1 такое не читает.
+    # Принудительно легаси-экспортёр:
+    try:
+        torch.onnx.export(net, dummy, str(ONNX), dynamo=False, **kwargs)
+    except TypeError:  # старый torch, параметра dynamo ещё нет
+        torch.onnx.export(net, dummy, str(ONNX), **kwargs)
+    try:
+        import onnx
+        m = onnx.load(str(ONNX))
+        print("opset:", m.opset_import[0].version, "(нужно <= 11)")
+    except ImportError:
+        pass
     print("saved:", ONNX, " classes:", classes)
 
 
