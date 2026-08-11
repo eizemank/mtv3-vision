@@ -9,6 +9,10 @@ std::pair<cv::Mat, std::vector<BlobMetaData>> ArucoProcessor::process(cv::Mat& f
 #if CV_VERSION_MAJOR > 4 || (CV_VERSION_MAJOR == 4 && CV_VERSION_MINOR >= 7)
     cv::aruco::Dictionary dictionary =
         cv::aruco::getPredefinedDictionary(cv::aruco::DICT_4X4_50);
+#elif CV_VERSION_MAJOR == 4 && CV_VERSION_MINOR == 6
+    cv::Ptr<cv::aruco::Dictionary> dictionary =
+        cv::makePtr<cv::aruco::Dictionary>(
+            cv::aruco::getPredefinedDictionary(cv::aruco::DICT_4X4_50));
 #else
     cv::Ptr<cv::aruco::Dictionary> dictionary =
         cv::aruco::getPredefinedDictionary(cv::aruco::DICT_4X4_50);
