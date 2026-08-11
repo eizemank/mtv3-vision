@@ -6,8 +6,13 @@ std::pair<cv::Mat, std::vector<BlobMetaData>> ArucoProcessor::process(cv::Mat& f
     cv::Mat resultFrame = frame.clone();
     std::vector<BlobMetaData> metadata;
 
+#if CV_VERSION_MAJOR > 4 || (CV_VERSION_MAJOR == 4 && CV_VERSION_MINOR >= 7)
+    cv::aruco::Dictionary dictionary =
+        cv::aruco::getPredefinedDictionary(cv::aruco::DICT_4X4_50);
+#else
     cv::Ptr<cv::aruco::Dictionary> dictionary =
         cv::aruco::getPredefinedDictionary(cv::aruco::DICT_4X4_50);
+#endif
 
     std::vector<int> markerIds;
     std::vector<std::vector<cv::Point2f>> markerCorners;
