@@ -10,7 +10,9 @@
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <mutex>
 #include <string>
+#include <vector>
 
 #include <opencv2/opencv.hpp>
 
@@ -53,6 +55,27 @@ static time_t cfgMtime(const char* path)
 
 // применение конфига к живому конвейеру (ставится в main); "" = успех
 static std::function<std::string(const nlohmann::json&)> gApply;
+static std::mutex gPreviewMutex;
+static cv::Mat gPreviewFrame;
+
+static void updatePreview(const cv::Mat& frame)
+{
+    std::lock_guard<std::mutex> lock(gPreviewMutex);
+    gPreviewFrame = frame.clone();
+}
+
+static bool getPreviewJpeg(std::string& jpeg)
+{
+    std::lock_guard<std::mutex> lock(gPreviewMutex);
+    if (gPreviewFrame.empty())
+        return false;
+
+    std::vector<uchar> encoded;
+    if (!cv::imencode(".jpg", gPreviewFrame, encoded))
+        return false;
+    jpeg.assign(reinterpret_cast<const char*>(encoded.data()), encoded.size());
+    return true;
+}
 
 // Атомарная запись: tmp -> fsync -> rename. На flash важно: обрыв питания
 // посреди записи не оставит обрезанный config.json.
@@ -88,7 +111,7 @@ static std::string saveConfigAtomic(const nlohmann::json& j)
 //   POST /config      — сохранить config.json (валидация json; применит вахтёр)
 //   GET  /mode/<имя>  — быстрое переключение processing_mode
 static const char kPage[] = R"HTML(<!doctype html><html><head><meta charset="utf-8">
-<title>MTV3 vision</title><style>
+<title>SeeSharp vision</title><style>
 body{font-family:sans-serif;background:#111;color:#eee;margin:12px;max-width:1100px}
 button{margin:2px;padding:6px 12px;background:#333;color:#eee;border:1px solid #555;cursor:pointer}
 button:hover{background:#464}
@@ -105,7 +128,7 @@ details details>summary{font-weight:normal;color:#9bd}
 .row input:focus{border-color:#7a7;outline:none}
 .hint{color:#666;font-size:12px}
 </style></head><body>
-<h3>MTV3 vision</h3>
+<h3>SeeSharp vision</h3>
 <img id="v" alt="нет потока :8080 — запущен ли mtv3_httpd и mainCV --dump?"><br>
 <div id="modes"></div>
 <h4>Параметры <span class="hint">(секция активного режима + общие)</span></h4>
@@ -118,7 +141,7 @@ details details>summary{font-weight:normal;color:#9bd}
 <button onclick="revert()">Откатить к сохранённому</button><span id="st"></span>
 <script>
 const modes=['aruco_detection','classification','blob_detection','line_detection','circle_detection'];
-document.getElementById('v').src='http://'+location.hostname+':8080/';
+setInterval(()=>document.getElementById('v').src='/preview.jpg?t='+Date.now(),200);
 const md=document.getElementById('modes');
 let cur='', cfgObj={};
 modes.forEach(m=>{const b=document.createElement('button');b.textContent=m;b.dataset.m=m;
@@ -341,6 +364,14 @@ static void controlServer(int port)
                 sendResp(c, "text/plain", std::string("error: ") + e.what() + "\n");
             }
         }
+        else if (req.compare(0, 17, "GET /preview.jpg ") == 0)
+        {
+            std::string jpeg;
+            if (getPreviewJpeg(jpeg))
+                sendResp(c, "image/jpeg", jpeg);
+            else
+                sendResp(c, "text/plain", "preview is not ready\n");
+        }
         else if (req.compare(0, 12, "GET /config ") == 0)
         {
             std::ifstream f(gConfigPath);
@@ -425,6 +456,7 @@ int main(int argc, char** argv)
     long frames = 0;
     Pipeline pipeline(source, manager, [&](const ProcessedItem& item) {
         ++frames;
+        updatePreview(item.result);
         if (!item.metadata.empty() && frames % 10 == 0)
         {
             std::cout << "det f" << frames << ":";

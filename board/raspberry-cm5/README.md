@@ -61,9 +61,9 @@ USB V4L2 camera:
 
 `--camera N` selects `/dev/videoN`. The program is headless, writes the last
 processed and source frames to `--dump-dir` when `--dump` is set, prints FPS
-and detection metadata to stdout, and provides the configuration UI at
-`http://<cm5-ip>:8081/`. The preview image requires a separate HTTP server
-that serves `last.jpg` on port 8080; configuration controls work without it.
+and detection metadata to stdout, and provides a live preview and configuration
+UI at `http://<cm5-ip>:8081/` (or `http://localhost:8081/` in the CM5 browser).
+No separate HTTP server is required.
 
 ## Autostart
 
