@@ -65,6 +65,13 @@ and detection metadata to stdout, and provides a live preview and configuration
 UI at `http://<cm5-ip>:8081/` (or `http://localhost:8081/` in the CM5 browser).
 No separate HTTP server is required.
 
+When opening the UI from another computer, `localhost` refers to that computer,
+not the CM5; use the CM5 IP address. Verify the local server with:
+
+```bash
+curl http://127.0.0.1:8081/config
+```
+
 ## Autostart
 
 Install the binary, config and optional ONNX model, then enable the supplied

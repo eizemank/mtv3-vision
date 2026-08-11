@@ -16,19 +16,26 @@ class CameraSource : public IFrameSource
 {
 public:
     explicit CameraSource(int device = 0, int backend = cv::CAP_V4L2)
-        : cap_(device, backend) {}
+        : device_(device), backend_(backend), cap_(device, backend) {}
 
     bool read(cv::Mat& frame) override
     {
 #ifdef RASPBERRY_CM5
-        for (int attempt = 0; attempt < 50; ++attempt)
+        while (true)
         {
-            if (cap_.read(frame))
-                return true;
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            for (int attempt = 0; attempt < 50; ++attempt)
+            {
+                if (cap_.read(frame))
+                    return true;
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            std::cerr << "Camera stream stalled; reopening /dev/video"
+                      << device_ << std::endl;
+            cap_.release();
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            if (!cap_.open(device_, backend_))
+                std::cerr << "Failed to reopen /dev/video" << device_ << std::endl;
         }
-        std::cerr << "Camera returned no frames for 5 seconds" << std::endl;
-        return false;
 #else
         return cap_.read(frame);
 #endif
@@ -43,5 +50,7 @@ public:
     }
 
 private:
+    int device_;
+    int backend_;
     cv::VideoCapture cap_;
 };
