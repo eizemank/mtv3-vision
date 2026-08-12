@@ -113,6 +113,15 @@ std::pair<cv::Mat, std::vector<BlobMetaData>> ClassifierProcessor::process(cv::M
     char text[128];
     snprintf(text, sizeof(text), "%s %.2f", label.c_str(), score);
     bool accepted = score >= params_.scoreThreshold;
+    if (accepted)
+    {
+        constexpr int margin = 3;
+        const cv::Rect classificationBox(
+            margin, margin,
+            std::max(1, frame.cols - margin * 2),
+            std::max(1, frame.rows - margin * 2));
+        cv::rectangle(result, classificationBox, cv::Scalar(0, 220, 0), 3);
+    }
     cv::putText(result, text, { 10, 30 }, cv::FONT_HERSHEY_SIMPLEX, 0.9,
                 accepted ? cv::Scalar(0, 220, 0) : cv::Scalar(128, 128, 128), 2);
 
