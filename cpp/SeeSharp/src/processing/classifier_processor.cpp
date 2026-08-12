@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <stdexcept>
 
 #include <opencv2/imgproc.hpp>
@@ -14,6 +15,21 @@ ClassifierProcessor::ClassifierProcessor(const ClassifierParams& params)
         throw std::runtime_error("ClassifierProcessor: rknn init failed: " +
                                  params_.modelRknn);
 #else
+    if (!params_.classNamesFile.empty())
+    {
+        std::ifstream labels(params_.classNamesFile);
+        if (!labels)
+            throw std::runtime_error("ClassifierProcessor: can't load " +
+                                     params_.classNamesFile);
+        std::string label;
+        while (std::getline(labels, label))
+            if (!label.empty())
+                params_.classNames.push_back(label);
+    }
+    if (params_.mean.size() != 3 || params_.standardDeviation.size() != 3)
+        throw std::runtime_error("ClassifierProcessor: mean/std must have 3 values");
+    if (params_.centerCrop && params_.resizeSize < params_.inputSize)
+        throw std::runtime_error("ClassifierProcessor: resize_size must be >= input_size");
     net_ = cv::dnn::readNetFromONNX(params_.modelOnnx);
     if (net_.empty())
         throw std::runtime_error("ClassifierProcessor: can't load " +
@@ -25,7 +41,20 @@ std::vector<float> ClassifierProcessor::infer(const cv::Mat& bgr)
 {
     const int s = params_.inputSize;
     cv::Mat resized;
-    cv::resize(bgr, resized, cv::Size(s, s), 0, 0, cv::INTER_AREA);
+    if (params_.centerCrop)
+    {
+        const int shortSide = std::min(bgr.cols, bgr.rows);
+        const double scale = static_cast<double>(params_.resizeSize) / shortSide;
+        cv::Mat scaled;
+        cv::resize(bgr, scaled, cv::Size(), scale, scale, cv::INTER_LINEAR);
+        const int x = (scaled.cols - s) / 2;
+        const int y = (scaled.rows - s) / 2;
+        resized = scaled(cv::Rect(x, y, s, s)).clone();
+    }
+    else
+    {
+        cv::resize(bgr, resized, cv::Size(s, s), 0, 0, cv::INTER_AREA);
+    }
 
 #ifdef MTV3_BOARD
     // NPU: uint8 RGB NHWC, нормализация (x/255) зашита при конвертации
@@ -38,7 +67,18 @@ std::vector<float> ClassifierProcessor::infer(const cv::Mat& bgr)
     // cv::dnn: float NCHW, RGB (swapRB), x/255 — как ToTensor при обучении
     cv::Mat blob = cv::dnn::blobFromImage(resized, 1.0 / 255.0,
                                           cv::Size(s, s), cv::Scalar(),
-                                          /*swapRB=*/true, /*crop=*/false);
+                                          params_.swapRb, /*crop=*/false);
+    const size_t planeSize = static_cast<size_t>(s) * s;
+    float* blobData = blob.ptr<float>();
+    for (size_t channel = 0; channel < 3; ++channel)
+    {
+        if (params_.standardDeviation[channel] == 0.0f)
+            throw std::runtime_error("ClassifierProcessor: std must be non-zero");
+        float* plane = blobData + channel * planeSize;
+        for (size_t i = 0; i < planeSize; ++i)
+            plane[i] = (plane[i] - params_.mean[channel]) /
+                       params_.standardDeviation[channel];
+    }
     net_.setInput(blob);
     cv::Mat out = net_.forward();
     return std::vector<float>(out.ptr<float>(),
