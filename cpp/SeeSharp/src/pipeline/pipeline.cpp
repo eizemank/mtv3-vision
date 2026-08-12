@@ -1,5 +1,7 @@
 #include "pipeline/pipeline.hpp"
 
+#include <chrono>
+
 void Pipeline::start()
 {
     running_ = true;
@@ -34,6 +36,7 @@ void Pipeline::captureLoop()
 
 void Pipeline::processingLoop()
 {
+    uint32_t frameId = 0;
     while (running_)
     {
         cv::Mat frame;
@@ -41,7 +44,16 @@ void Pipeline::processingLoop()
             continue;                     // разбужены на останов
 
         ProcessedItem item;
+        const auto started = std::chrono::steady_clock::now();
         auto [result, metadata] = manager_.processFrame(frame);
+        const auto finished = std::chrono::steady_clock::now();
+        item.frameId = ++frameId;
+        item.timestampMs = static_cast<uint32_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                finished.time_since_epoch()).count());
+        item.inferenceUs = static_cast<uint32_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                finished - started).count());
         item.frame = std::move(frame);
         item.result = std::move(result);
         item.metadata = std::move(metadata);

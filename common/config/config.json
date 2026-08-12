@@ -329,6 +329,21 @@
       "score_threshold": 0.5,
       "class_names": ["background", "target"]
     },
+    "transports": {
+      "udp_metadata": {
+        "enabled": false,
+        "host": "127.0.0.1",
+        "port": 5000
+      },
+      "uart_dxl": {
+        "enabled": true,
+        "device": "/dev/serial0",
+        "baud": 115200,
+        "id": 100,
+        "rs485": false,
+        "eeprom_file": "dxl_eeprom.bin"
+      }
+    },
     "general_params":
     {
       "processing_mode": "aruco_detection",

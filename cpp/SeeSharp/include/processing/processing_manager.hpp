@@ -7,12 +7,17 @@
 #include <nlohmann/json.hpp>
 #include "processing/processing_factory.hpp"
 #include "model/blob_meta_data.hpp"
+#include "model/automapper.hpp"
+#include "model/general_params.hpp"
 
 class ProcessingManager
 {
 public:
     ProcessingManager(const nlohmann::json& config)
     {
+        GeneralParams params = Automapper::mapParams<GeneralParams>(
+            config, ConfigKeys::GENERAL_PARAMS_CONFIG_ID);
+        processingType_ = params.processingType;
         frameProcessor_ = ProcessingFactory::createProcessor(config);
     }
 
@@ -20,9 +25,12 @@ public:
     /// конфигу. Ошибка конфига -> исключение, старый процессор остаётся.
     void reconfigure(const nlohmann::json& config)
     {
+        GeneralParams params = Automapper::mapParams<GeneralParams>(
+            config, ConfigKeys::GENERAL_PARAMS_CONFIG_ID);
         auto p = ProcessingFactory::createProcessor(config);  // вне лока
         std::lock_guard<std::mutex> lock(m_);
         frameProcessor_ = std::move(p);
+        processingType_ = params.processingType;
     }
 
     /// @brief Process a frame and return the processed frame along with metadata
@@ -32,7 +40,14 @@ public:
         return frameProcessor_->process(frame);
     }
 
+    ProcessingType processingType()
+    {
+        std::lock_guard<std::mutex> lock(m_);
+        return processingType_;
+    }
+
 private:
     std::unique_ptr<IFrameProcessor> frameProcessor_;
+    ProcessingType processingType_ = ProcessingType::BlobDetection;
     std::mutex m_;
 };

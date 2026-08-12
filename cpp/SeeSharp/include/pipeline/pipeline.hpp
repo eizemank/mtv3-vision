@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <functional>
 #include <mutex>
 #include <queue>
@@ -25,6 +26,9 @@
 /// Результат обработки одного кадра, приходит в sink
 struct ProcessedItem
 {
+    uint32_t frameId = 0;
+    uint32_t timestampMs = 0;
+    uint32_t inferenceUs = 0;
     cv::Mat frame;                       // исходный кадр
     cv::Mat result;                      // аннотированный кадр
     std::vector<BlobMetaData> metadata;  // найденные объекты

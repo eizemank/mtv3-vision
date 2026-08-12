@@ -10,6 +10,7 @@
 #include "processing/aruco_processor.hpp"
 #include "model/classifier_params.hpp"
 #include "processing/classifier_processor.hpp"
+#include "processing/passthrough_processor.hpp"
 
 std::unique_ptr<IFrameProcessor> ProcessingFactory::createProcessor(const nlohmann::json& rawConfig)
 {
@@ -17,6 +18,8 @@ std::unique_ptr<IFrameProcessor> ProcessingFactory::createProcessor(const nlohma
     GeneralParams generalParams = Automapper::mapParams<GeneralParams>(rawConfig, ConfigKeys::GENERAL_PARAMS_CONFIG_ID);
     switch (generalParams.processingType)
     {
+        case ProcessingType::Off:
+            return std::make_unique<PassthroughProcessor>();
         case ProcessingType::BlobDetection:
         {
             BlobParams params = Automapper::mapParams<BlobParams>(rawConfig, ConfigKeys::BLOB_DETECTION_CONFIG_ID);

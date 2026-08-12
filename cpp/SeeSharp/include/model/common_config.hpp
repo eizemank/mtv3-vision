@@ -5,6 +5,7 @@
 /// @brief Enum to define algorithm to be used via processing video stream
 enum class ProcessingType
 {
+    Off,
     BlobDetection,
     LineDetection,
     CircleDetection,
@@ -15,6 +16,7 @@ enum class ProcessingType
 
 inline ProcessingType processingTypeFromString(const std::string& str)
 {
+    if (str == "off") return ProcessingType::Off;
     if (str == ConfigKeys::BLOB_DETECTION_CONFIG_ID) return ProcessingType::BlobDetection;
     if (str == ConfigKeys::LINE_DETECTION_CONFIG_ID) return ProcessingType::LineDetection;
     if (str == ConfigKeys::CIRCLE_DETECTION_CONFIG_ID) return ProcessingType::CircleDetection;

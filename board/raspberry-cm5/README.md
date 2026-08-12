@@ -40,9 +40,18 @@ cmake --build . -j"$(nproc)"
 ```
 
 The build copies `common/config/config.json` into `build-cm5/config.json`.
-For `classification`, copy `simple_classifier.onnx` beside `mainCV` and set
-`general_params.processing_mode` to `classification`. The CM5 ignores
-`classification.model_rknn`.
+To install the Apache-2.0 MobileNetV2 model from ONNX Model Zoo, its 1000
+ImageNet labels and the matching preprocessing configuration, run:
+
+```bash
+cmake --build . --target download_mobilenetv2
+```
+
+The script verifies the model SHA-256 and updates only the `classification`
+section. Select `classification` in the web UI or set
+`general_params.processing_mode` manually. The model classifies the dominant
+object in the entire frame; it is not an object detector and does not produce
+separate bounding boxes. The CM5 ignores `classification.model_rknn`.
 
 ## Manual start
 
@@ -64,6 +73,14 @@ processed and source frames to `--dump-dir` when `--dump` is set, prints FPS
 and detection metadata to stdout, and provides a live preview and configuration
 UI at `http://<cm5-ip>:8081/` (or `http://localhost:8081/` in the CM5 browser).
 No separate HTTP server is required.
+
+Metadata output over UDP and the Dynamixel 1.0 UART virtual device are
+documented in [`TRANSPORTS.md`](./TRANSPORTS.md).
+
+To enable the real 3.3 V UART on GPIO14/GPIO15 and remove the serial console
+from it, run `sudo sh board/raspberry-cm5/setup_uart.sh`, reboot, and use
+`/dev/serial0`. UART metadata output is enabled in the CM5 configuration by
+default.
 
 When opening the UI from another computer, `localhost` refers to that computer,
 not the CM5; use the CM5 IP address. Verify the local server with:
@@ -87,6 +104,8 @@ systemd unit:
 sudo install -d /opt/seesharp /tmp/seesharp
 sudo install -m 0755 build-cm5/mainCV /opt/seesharp/mainCV
 sudo install -m 0644 build-cm5/config.json /opt/seesharp/config.json
+sudo install -m 0644 build-cm5/mobilenetv2-12.onnx /opt/seesharp/mobilenetv2-12.onnx
+sudo install -m 0644 build-cm5/imagenet_classes.txt /opt/seesharp/imagenet_classes.txt
 sudo install -m 0644 ~/mtv3-vision/board/raspberry-cm5/systemd/seesharp-cm5.service /etc/systemd/system/seesharp-cm5.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now seesharp-cm5

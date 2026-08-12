@@ -35,7 +35,13 @@ std::pair<cv::Mat, std::vector<BlobMetaData>> CircleProcessor::process(cv::Mat& 
         cv::circle(resultFrame, center, radius, cv::Scalar(0, 255, 0), 2);
         cv::circle(resultFrame, center, 2, cv::Scalar(0, 0, 255), 3);
 
-        // collect metadata
+        BlobMetaData meta;
+        meta.id = 0;
+        meta.center = center;
+        meta.area = 3.141592653589793 * radius * radius;
+        meta.boundingBox = cv::Rect(center.x - radius, center.y - radius,
+                                    radius * 2, radius * 2);
+        metadata.push_back(meta);
     }
 
     return { resultFrame, metadata };

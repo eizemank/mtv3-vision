@@ -7,9 +7,11 @@
 // imshow + запись combined.avi (TEST CODE).
 
 #include <chrono>
+#include <cerrno>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -19,6 +21,10 @@
 #include "config/config_reader.hpp"
 #include "pipeline/pipeline.hpp"
 #include "processing/processing_manager.hpp"
+
+#ifdef RASPBERRY_CM5
+#include "transport/transport_manager.hpp"
+#endif
 
 #if defined(MTV3_BOARD) || defined(RASPBERRY_CM5)
 #ifndef _WIN32
@@ -140,7 +146,7 @@ details details>summary{font-weight:normal;color:#9bd}
 <button onclick="send('/config')">Сохранить (постоянно)</button>
 <button onclick="revert()">Откатить к сохранённому</button><span id="st"></span>
 <script>
-const modes=['aruco_detection','classification','blob_detection','line_detection','circle_detection'];
+const modes=['off','aruco_detection','classification','blob_detection','line_detection','circle_detection'];
 setInterval(()=>document.getElementById('v').src='/preview.jpg?t='+Date.now(),200);
 const md=document.getElementById('modes');
 let cur='', cfgObj={};
@@ -228,6 +234,21 @@ function revert(){fetch('/revert').then(r=>r.text()).then(t=>{st.textContent=t;l
 load();
 </script></body></html>)HTML";
 
+static bool sendAll(int socketFd, const char* data, size_t size)
+{
+    while (size > 0)
+    {
+        ssize_t sent = send(socketFd, data, size, MSG_NOSIGNAL);
+        if (sent < 0 && errno == EINTR)
+            continue;
+        if (sent <= 0)
+            return false;
+        data += sent;
+        size -= static_cast<size_t>(sent);
+    }
+    return true;
+}
+
 static void sendResp(int c, const char* type, const std::string& body)
 {
     char hdr[256];
@@ -235,8 +256,8 @@ static void sendResp(int c, const char* type, const std::string& body)
                      "HTTP/1.0 200 OK\r\nContent-Type: %s\r\n"
                      "Content-Length: %zu\r\nConnection: close\r\n\r\n",
                      type, body.size());
-    (void)!write(c, hdr, k);
-    (void)!write(c, body.data(), body.size());
+    if (sendAll(c, hdr, static_cast<size_t>(k)))
+        sendAll(c, body.data(), body.size());
 }
 
 static void controlServer(int port)
@@ -454,15 +475,27 @@ int main(int argc, char** argv)
     // headless: fps раз в 100 кадров; сюда же встанет отправка metadata наружу
     auto t0 = std::chrono::steady_clock::now();
     long frames = 0;
+    double currentFps = 0.0;
+#ifdef RASPBERRY_CM5
+    std::unique_ptr<TransportManager> transports;
+#endif
     Pipeline pipeline(source, manager, [&](const ProcessedItem& item) {
         ++frames;
         updatePreview(item.result);
         if (!item.metadata.empty() && frames % 10 == 0)
         {
             std::cout << "det f" << frames << ":";
+            constexpr size_t kMaxLoggedObjects = 20;
+            size_t loggedObjects = 0;
             for (const auto& m : item.metadata)
+            {
+                if (loggedObjects++ >= kMaxLoggedObjects)
+                    break;
                 std::cout << " id=" << m.id
                           << "(" << (int)m.center.x << "," << (int)m.center.y << ")";
+            }
+            if (item.metadata.size() > kMaxLoggedObjects)
+                std::cout << " ... +" << item.metadata.size() - kMaxLoggedObjects;
             std::cout << std::endl;
         }
         if (dumpEvery && frames % dumpEvery == 0)
@@ -470,11 +503,27 @@ int main(int argc, char** argv)
             cv::imwrite(dumpDir + "/last.jpg", item.result);
             cv::imwrite(dumpDir + "/last_src.jpg", item.frame);
         }
+#ifdef RASPBERRY_CM5
+        if (transports)
+        {
+            VisionFrame transportFrame;
+            transportFrame.frameId = item.frameId;
+            transportFrame.timestampMs = item.timestampMs;
+            transportFrame.imageWidth = static_cast<uint16_t>(item.frame.cols);
+            transportFrame.imageHeight = static_cast<uint16_t>(item.frame.rows);
+            transportFrame.detectorType = manager.processingType();
+            transportFrame.inferenceUs = item.inferenceUs;
+            transportFrame.fps = static_cast<float>(currentFps);
+            transportFrame.objects = item.metadata;
+            transports->publish(transportFrame);
+        }
+#endif
         if (frames % 100 == 0)
         {
             auto now = std::chrono::steady_clock::now();
             double dt = std::chrono::duration<double>(now - t0).count();
-            std::cout << "fps=" << 100.0 / dt
+            currentFps = 100.0 / dt;
+            std::cout << "fps=" << currentFps
                       << " frames=" << frames
                       << " objects=" << item.metadata.size() << std::endl;
             t0 = now;
@@ -512,6 +561,36 @@ int main(int argc, char** argv)
             return e.what();
         }
     };
+
+#ifdef RASPBERRY_CM5
+    transports = std::make_unique<TransportManager>(
+        reader.getRawConfig(), [](uint8_t detectorCode) -> bool {
+            const char* mode = nullptr;
+            switch (detectorCode)
+            {
+                case 0x00: mode = "off"; break;
+                case 0x01: mode = "classification"; break;
+                case 0x02: mode = "aruco_detection"; break;
+                case 0x03: mode = "blob_detection"; break;
+                case 0x04: mode = "line_detection"; break;
+                case 0x05: mode = "circle_detection"; break;
+                default: return false;
+            }
+            try
+            {
+                std::ifstream input(gConfigPath);
+                nlohmann::json config;
+                input >> config;
+                config["general_params"]["processing_mode"] = mode;
+                const std::string error = gApply ? gApply(config) : "not ready";
+                return error.empty() && saveConfigAtomic(config).empty();
+            }
+            catch (...)
+            {
+                return false;
+            }
+        });
+#endif
 
     // Вахтёр: правка config.json руками/по сети применяется без рестарта
     std::atomic<bool> ctlRun{true};

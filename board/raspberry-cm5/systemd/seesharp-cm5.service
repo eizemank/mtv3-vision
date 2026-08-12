@@ -9,6 +9,7 @@ WorkingDirectory=/opt/seesharp
 ExecStart=/usr/bin/libcamerify /opt/seesharp/mainCV --camera 0 --config /opt/seesharp/config.json --dump 10 --dump-dir /tmp/seesharp
 Restart=always
 RestartSec=2
+SupplementaryGroups=dialout
 
 [Install]
 WantedBy=multi-user.target

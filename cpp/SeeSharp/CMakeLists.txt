@@ -42,6 +42,12 @@ if(NOT MTV3_BOARD)
         ${CMAKE_SOURCE_DIR}/src/pipeline/shm_source.cpp
         ${CMAKE_SOURCE_DIR}/src/nn/rknn_classifier.cpp)
 endif()
+if(NOT RASPBERRY_CM5)
+    list(REMOVE_ITEM SRC_FILES
+        ${CMAKE_SOURCE_DIR}/src/transport/dxl_uart_transport.cpp
+        ${CMAKE_SOURCE_DIR}/src/transport/transport_manager.cpp
+        ${CMAKE_SOURCE_DIR}/src/transport/udp_metadata_transport.cpp)
+endif()
 
 add_executable(mainCV ${SRC_FILES})
 
@@ -64,6 +70,13 @@ target_include_directories(mainCV PRIVATE
 
 if(RASPBERRY_CM5)
     target_compile_definitions(mainCV PRIVATE RASPBERRY_CM5)
+    add_custom_target(download_mobilenetv2
+        COMMAND sh
+            ${CMAKE_SOURCE_DIR}/../../board/raspberry-cm5/download_mobilenetv2.sh
+            ${CMAKE_BINARY_DIR}
+            ${CMAKE_BINARY_DIR}/config.json
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        COMMENT "Downloading MobileNetV2 and ImageNet labels")
 endif()
 
 # конфиг: единый sw/common/config/config.json; локальный config/ — fallback
