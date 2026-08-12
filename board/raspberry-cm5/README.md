@@ -76,6 +76,9 @@ No separate HTTP server is required.
 
 Metadata output over UDP and the Dynamixel 1.0 UART virtual device are
 documented in [`TRANSPORTS.md`](./TRANSPORTS.md).
+The same transport module can send annotated JPEG video in a separate UDP
+worker; enable `transports.udp_video` and run `udp_video_receiver.py` on the
+destination computer.
 
 To enable the real 3.3 V UART on GPIO14/GPIO15 and remove the serial console
 from it, run `sudo sh board/raspberry-cm5/setup_uart.sh`, reboot, and use

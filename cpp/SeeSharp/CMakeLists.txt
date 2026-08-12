@@ -46,7 +46,8 @@ if(NOT RASPBERRY_CM5)
     list(REMOVE_ITEM SRC_FILES
         ${CMAKE_SOURCE_DIR}/src/transport/dxl_uart_transport.cpp
         ${CMAKE_SOURCE_DIR}/src/transport/transport_manager.cpp
-        ${CMAKE_SOURCE_DIR}/src/transport/udp_metadata_transport.cpp)
+        ${CMAKE_SOURCE_DIR}/src/transport/udp_metadata_transport.cpp
+        ${CMAKE_SOURCE_DIR}/src/transport/udp_video_transport.cpp)
 endif()
 
 add_executable(mainCV ${SRC_FILES})

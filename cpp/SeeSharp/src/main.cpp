@@ -515,7 +515,7 @@ int main(int argc, char** argv)
             transportFrame.inferenceUs = item.inferenceUs;
             transportFrame.fps = static_cast<float>(currentFps);
             transportFrame.objects = item.metadata;
-            transports->publish(transportFrame);
+            transports->publish(transportFrame, item.result);
         }
 #endif
         if (frames % 100 == 0)

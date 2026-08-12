@@ -4,6 +4,7 @@
 
 #include "transport/dxl_uart_transport.hpp"
 #include "transport/udp_metadata_transport.hpp"
+#include "transport/udp_video_transport.hpp"
 
 TransportManager::TransportManager(const nlohmann::json& config,
                                    DetectorCallback detectorCallback)
@@ -25,6 +26,24 @@ TransportManager::TransportManager(const nlohmann::json& config,
         }
     }
 
+    const nlohmann::json video = transports.value(
+        "udp_video", nlohmann::json::object());
+    if (video.value("enabled", false))
+    {
+        video_ = std::make_unique<UdpVideoTransport>(
+            video.value("host", "127.0.0.1"),
+            static_cast<uint16_t>(video.value("port", 5001)),
+            video.value("jpeg_quality", 80),
+            static_cast<size_t>(video.value("packet_size", 1400)),
+            video.value("max_fps", 15));
+        if (!video_->isOpen())
+        {
+            std::cerr << "UDP video transport is disabled: invalid endpoint"
+                      << std::endl;
+            video_.reset();
+        }
+    }
+
     const nlohmann::json uart = transports.value(
         "uart_dxl", nlohmann::json::object());
     if (uart.value("enabled", false))
@@ -43,10 +62,12 @@ TransportManager::TransportManager(const nlohmann::json& config,
 
 TransportManager::~TransportManager() = default;
 
-void TransportManager::publish(const VisionFrame& frame)
+void TransportManager::publish(const VisionFrame& frame, const cv::Mat& image)
 {
     if (uart_)
         uart_->publish(frame);
     if (udp_)
         udp_->publish(frame);
+    if (video_)
+        video_->publish(frame.frameId, frame.timestampMs, image);
 }

@@ -335,6 +335,14 @@
         "host": "127.0.0.1",
         "port": 5000
       },
+      "udp_video": {
+        "enabled": false,
+        "host": "127.0.0.1",
+        "port": 5001,
+        "jpeg_quality": 80,
+        "packet_size": 1400,
+        "max_fps": 15
+      },
       "uart_dxl": {
         "enabled": true,
         "device": "/dev/serial0",

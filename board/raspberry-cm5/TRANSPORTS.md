@@ -80,6 +80,53 @@ receiver detect loss. Use UART polling when deterministic request/response is
 required. A datagram contains at most 200 detections; `truncated: true` marks
 frames that exceeded this safety limit.
 
+## UDP video
+
+Annotated frames can be sent independently from metadata by a dedicated
+worker. JPEG encoding and UDP transmission never run in the pipeline thread;
+if the network is slower than capture, an old queued frame is replaced by the
+newest one.
+
+```json
+"udp_video": {
+  "enabled": true,
+  "host": "192.168.1.50",
+  "port": 5001,
+  "jpeg_quality": 80,
+  "packet_size": 1400,
+  "max_fps": 15
+}
+```
+
+Each JPEG is split into datagrams to avoid IP fragmentation. Every datagram
+starts with a 32-byte network-byte-order header:
+
+| Offset | Size | Field | Description |
+|---:|---:|---|---|
+| 0 | 4 | magic | ASCII `MTV3` |
+| 4 | 1 | version | `1` |
+| 5 | 1 | codec | `1` = JPEG |
+| 6 | 2 | header_size | `32` |
+| 8 | 4 | frame_id | Frame sequence number |
+| 12 | 4 | timestamp_ms | Monotonic timestamp |
+| 16 | 4 | total_size | Complete JPEG size |
+| 20 | 2 | chunk_index | Zero-based fragment number |
+| 22 | 2 | chunk_count | Number of fragments |
+| 24 | 2 | payload_size | Bytes following the header |
+| 26 | 2 | width | Image width |
+| 28 | 2 | height | Image height |
+| 30 | 2 | flags | Reserved, currently zero |
+
+The receiver groups packets by `frame_id`, orders them by `chunk_index`, and
+decodes JPEG only after all `chunk_count` fragments arrive. UDP does not
+retransmit lost fragments, so an incomplete frame must be discarded.
+
+Example receiver (requires `python3-opencv` and `python3-numpy`):
+
+```bash
+python3 board/raspberry-cm5/udp_video_receiver.py 5001
+```
+
 ## UART Dynamixel Protocol 1.0
 
 The implementation follows the agreed CM5 virtual-device protocol:
