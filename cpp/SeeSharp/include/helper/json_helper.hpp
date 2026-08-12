@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdexcept>
+
 #include <nlohmann/json.hpp>
 #include "config/config_keys.hpp"
 #include "model/blob_detection/blob_params.hpp"
@@ -106,4 +108,9 @@ inline void from_json(const nlohmann::json& j, GeneralParams& p)
 {
     j.at(ConfigKeys::DEBUG_MODE).get_to(p.debugMode);
     p.processingType = processingTypeFromString(j.at(ConfigKeys::PROCESSING_MODE).get<std::string>());
+    p.cameraRotation = j.value("camera_rotation", 0);
+    if (p.cameraRotation != 0 && p.cameraRotation != 90 &&
+        p.cameraRotation != 180 && p.cameraRotation != 270)
+        throw std::invalid_argument(
+            "general_params.camera_rotation must be 0, 90, 180 or 270");
 }

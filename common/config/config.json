@@ -355,6 +355,7 @@
     "general_params":
     {
       "processing_mode": "aruco_detection",
+      "camera_rotation": 0,
       "debug_mode": true
     }
 }

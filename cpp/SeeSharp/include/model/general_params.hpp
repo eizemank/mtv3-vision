@@ -6,4 +6,5 @@ struct GeneralParams
 {
     bool debugMode;
     ProcessingType processingType;
+    int cameraRotation = 0;
 };
