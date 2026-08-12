@@ -7,7 +7,7 @@
 #include "model/general_params.hpp"
 #include "model/line_params.hpp"
 
-void from_json(const nlohmann::json& j, CriterionParams& p)
+inline void from_json(const nlohmann::json& j, CriterionParams& p)
 {
     j.at("min").get_to(p.min);
     j.at("max").get_to(p.max);
@@ -15,7 +15,7 @@ void from_json(const nlohmann::json& j, CriterionParams& p)
     j.at("weight").get_to(p.weight);
 }
 
-void from_json(const nlohmann::json& j, NodeSettings& p)
+inline void from_json(const nlohmann::json& j, NodeSettings& p)
 {
     j.at("id").get_to(p.id);
     j.at("blob_id").get_to(p.blobColorPatternIds);
@@ -28,7 +28,7 @@ void from_json(const nlohmann::json& j, NodeSettings& p)
     j.at("angle").get_to(p.angle);
 }
 
-void from_json(const nlohmann::json& j, LinkSettings& p)
+inline void from_json(const nlohmann::json& j, LinkSettings& p)
 {
     j.at("id").get_to(p.id);
     j.at(ConfigKeys::THRESHOLD).get_to(p.threshold);
@@ -40,7 +40,7 @@ void from_json(const nlohmann::json& j, LinkSettings& p)
 }
 
 // TODO (DD): Move strings to constants
-void from_json(const nlohmann::json& j, OneColorBlobParams& p)
+inline void from_json(const nlohmann::json& j, OneColorBlobParams& p)
 {
     j.at("id").get_to(p.id);
     j.at("min_area").get_to(p.minArea);
@@ -60,7 +60,7 @@ void from_json(const nlohmann::json& j, OneColorBlobParams& p)
     p.upperRange = cv::Scalar(upper[0], upper[1], upper[2]);
 }
 
-void from_json(const nlohmann::json& j, MultiColorBlobParams& p)
+inline void from_json(const nlohmann::json& j, MultiColorBlobParams& p)
 {
     j.at("id").get_to(p.id);
     j.at("overall_threshold").get_to(p.overallThreshold);
@@ -71,7 +71,7 @@ void from_json(const nlohmann::json& j, MultiColorBlobParams& p)
     j.at("links").get_to(p.links);
 }
 
-void from_json(const nlohmann::json& j, BlobParams& p)
+inline void from_json(const nlohmann::json& j, BlobParams& p)
 {
     j.at(ConfigKeys::ENABLE_ONE_COLOR_DETECTION).get_to(p.enableOneColorDetection);
     j.at(ConfigKeys::ENABLE_MULTICOLOR_DETECTION).get_to(p.enableMultiColorDetection);
@@ -79,7 +79,7 @@ void from_json(const nlohmann::json& j, BlobParams& p)
     j.at(ConfigKeys::MULTICOLOR_BLOB_PATTERNS_CONFIG_ID).get_to(p.multiColorBlobParams);
 }
 
-void from_json(const nlohmann::json& j, LineParams& p)
+inline void from_json(const nlohmann::json& j, LineParams& p)
 {
     j.at(ConfigKeys::CANNY_THRESHOLD1).get_to(p.cannyThreshold1);
     j.at(ConfigKeys::CANNY_THRESHOLD2).get_to(p.cannyThreshold2);
@@ -93,7 +93,7 @@ void from_json(const nlohmann::json& j, LineParams& p)
     j.at(ConfigKeys::HOUGH_MAX_LINE_GAP).get_to(p.maxLineGap);
 }
 
-void from_json(const nlohmann::json& j, CircleParams& p)
+inline void from_json(const nlohmann::json& j, CircleParams& p)
 {
     j.at(ConfigKeys::HOUGH_PARAM1).get_to(p.houghParam1);
     j.at(ConfigKeys::HOUGH_PARAM2).get_to(p.houghParam2);
@@ -102,7 +102,7 @@ void from_json(const nlohmann::json& j, CircleParams& p)
     j.at(ConfigKeys::DISTANCE).get_to(p.distance);
 }
 
-void from_json(const nlohmann::json& j, GeneralParams& p)
+inline void from_json(const nlohmann::json& j, GeneralParams& p)
 {
     j.at(ConfigKeys::DEBUG_MODE).get_to(p.debugMode);
     p.processingType = processingTypeFromString(j.at(ConfigKeys::PROCESSING_MODE).get<std::string>());
