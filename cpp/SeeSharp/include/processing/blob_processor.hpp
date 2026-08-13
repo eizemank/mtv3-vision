@@ -37,6 +37,8 @@ private:
         const std::unordered_map<int, std::vector<DetectedBlob>>& blobsByColorPattern,
         std::vector<DetectedMulticolorBlob>& multiColorBlobs);
     std::vector<BlobMetaData> getMetaDataBlobs(const std::unordered_map<int, std::vector<DetectedBlob>>& blobsByColorPattern);
+    std::vector<BlobMetaData> getCompositeMetaData(
+        const std::vector<DetectedMulticolorBlob>& multiColorBlobs);
     void iterateCombinations(
         const std::vector<std::vector<NodeCandidate>>& blobGroups,
         size_t depth,

@@ -1,7 +1,13 @@
 {
+    "system_admin": {
+      "token": "",
+      "file_root": "/opt/seesharp",
+      "terminal_enabled": false
+    },
     "blob_detection": {
       "enable_one_color_detection": true,
       "enable_multicolor_detection": true,
+      "max_composite_objects": 5,
       "one_color_patterns":
       [
         {

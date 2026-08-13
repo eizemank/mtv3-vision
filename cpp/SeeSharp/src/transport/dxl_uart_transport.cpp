@@ -15,6 +15,7 @@
 #include <sys/ioctl.h>
 #include <sys/sysinfo.h>
 #include <termios.h>
+#include <time.h>
 #include <unistd.h>
 
 namespace
@@ -108,12 +109,15 @@ int baudFromIndex(uint8_t index)
 DxlUartTransport::DxlUartTransport(std::string device, int baud,
                                    uint8_t deviceId, bool rs485,
                                    std::string eepromPath,
-                                   DetectorCallback detectorCallback)
+                                   DetectorCallback detectorCallback,
+                                   bool startupPush, uint8_t pushIntervalMs)
     : device_(std::move(device)), baud_(baud), rs485_(rs485),
       eepromPath_(std::move(eepromPath)),
       detectorCallback_(std::move(detectorCallback))
 {
     initializeControlTable(deviceId, baud);
+    table_[0x13] = startupPush ? 1 : 0;
+    table_[0x14] = std::max<uint8_t>(1, pushIntervalMs);
     loadEeprom();
     baud_ = baudFromIndex(table_[0x04]);
     if (openPort())
@@ -312,6 +316,7 @@ void DxlUartTransport::publish(const VisionFrame& frame)
                 object.boundingBox.width * 5));
         }
     }
+    frameReady_ = true;
 }
 
 bool DxlUartTransport::writeAll(const std::vector<uint8_t>& packet)
@@ -333,7 +338,7 @@ bool DxlUartTransport::writeAll(const std::vector<uint8_t>& packet)
     return true;
 }
 
-void DxlUartTransport::sendStatus(uint8_t error,
+bool DxlUartTransport::sendStatus(uint8_t error,
                                   const std::vector<uint8_t>& params)
 {
     uint8_t id;
@@ -348,7 +353,7 @@ void DxlUartTransport::sendStatus(uint8_t error,
     packet.insert(packet.end(), params.begin(), params.end());
     packet.push_back(checksum(packet.data() + 2, packet.size() - 2));
     std::this_thread::sleep_for(std::chrono::microseconds(delay * 2));
-    writeAll(packet);
+    return writeAll(packet);
 }
 
 void DxlUartTransport::applyWrite(uint8_t address,
@@ -484,7 +489,17 @@ void DxlUartTransport::sendPush()
             12 + table_[0x12] * objectSize);
         data.assign(table_.begin() + 0x30, table_.begin() + 0x30 + length);
     }
-    sendStatus(0, data);
+    const bool sent = sendStatus(0, data);
+    if (sent && !firstDetectionSent_.exchange(true))
+    {
+        timespec bootTime{};
+        clock_gettime(CLOCK_BOOTTIME, &bootTime);
+        const long long milliseconds = bootTime.tv_sec * 1000LL +
+                                       bootTime.tv_nsec / 1000000LL;
+        std::cout << "BOOT_SLA first_uart_detection_ms=" << milliseconds
+                  << " limit_ms=12000 status="
+                  << (milliseconds <= 12000 ? "PASS" : "FAIL") << std::endl;
+    }
 }
 
 void DxlUartTransport::run()
@@ -527,7 +542,7 @@ void DxlUartTransport::run()
             interval = std::max<uint8_t>(1, table_[0x14]);
         }
         const auto now = std::chrono::steady_clock::now();
-        if (pushEnabled && now >= nextPush && buffer.empty())
+        if (pushEnabled && frameReady_ && now >= nextPush && buffer.empty())
         {
             sendPush();
             nextPush = now + std::chrono::milliseconds(interval);

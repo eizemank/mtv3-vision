@@ -11,6 +11,7 @@ enum class ProcessingType
     CircleDetection,
     ArucoDetection,
     Classification,
+    ObjectDetection,
     Calibration,
 };
 
@@ -22,5 +23,6 @@ inline ProcessingType processingTypeFromString(const std::string& str)
     if (str == ConfigKeys::CIRCLE_DETECTION_CONFIG_ID) return ProcessingType::CircleDetection;
     if (str == ConfigKeys::ARUCO_DETECTION_CONFIG_ID) return ProcessingType::ArucoDetection;
     if (str == ConfigKeys::CLASSIFICATION_CONFIG_ID) return ProcessingType::Classification;
+    if (str == "object_detection") return ProcessingType::ObjectDetection;
     throw std::invalid_argument("Unknown ProcessingType: " + str);
 }

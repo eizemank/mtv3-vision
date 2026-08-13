@@ -19,7 +19,8 @@ public:
 
     DxlUartTransport(std::string device, int baud, uint8_t deviceId,
                      bool rs485, std::string eepromPath,
-                     DetectorCallback detectorCallback);
+                     DetectorCallback detectorCallback,
+                     bool startupPush, uint8_t pushIntervalMs);
     ~DxlUartTransport();
 
     bool isOpen() const { return serialFd_ >= 0; }
@@ -32,7 +33,7 @@ private:
     bool openPort();
     void run();
     void processPacket(const std::vector<uint8_t>& packet);
-    void sendStatus(uint8_t error, const std::vector<uint8_t>& params = {});
+    bool sendStatus(uint8_t error, const std::vector<uint8_t>& params = {});
     void sendPush();
     bool writeAll(const std::vector<uint8_t>& packet);
     void applyWrite(uint8_t address, const std::vector<uint8_t>& data);
@@ -47,6 +48,8 @@ private:
     std::vector<uint8_t> lastTransmit_;
     std::mutex mutex_;
     std::atomic<bool> running_{true};
+    std::atomic<bool> frameReady_{false};
+    std::atomic<bool> firstDetectionSent_{false};
     std::thread worker_;
     DetectorCallback detectorCallback_;
 };

@@ -23,6 +23,7 @@
 #include "processing/processing_manager.hpp"
 
 #ifdef RASPBERRY_CM5
+#include "system/system_admin.hpp"
 #include "transport/transport_manager.hpp"
 #endif
 
@@ -62,22 +63,28 @@ static time_t cfgMtime(const char* path)
 // применение конфига к живому конвейеру (ставится в main); "" = успех
 static std::function<std::string(const nlohmann::json&)> gApply;
 static std::mutex gPreviewMutex;
-static cv::Mat gPreviewFrame;
+static cv::Mat gPreviewSourceFrame;
+static cv::Mat gPreviewResultFrame;
+#ifdef RASPBERRY_CM5
+static std::unique_ptr<SystemAdmin> gSystemAdmin;
+#endif
 
-static void updatePreview(const cv::Mat& frame)
+static void updatePreview(const cv::Mat& source, const cv::Mat& result)
 {
     std::lock_guard<std::mutex> lock(gPreviewMutex);
-    gPreviewFrame = frame.clone();
+    gPreviewSourceFrame = source.clone();
+    gPreviewResultFrame = result.clone();
 }
 
-static bool getPreviewJpeg(std::string& jpeg)
+static bool getPreviewJpeg(bool source, std::string& jpeg)
 {
     std::lock_guard<std::mutex> lock(gPreviewMutex);
-    if (gPreviewFrame.empty())
+    const cv::Mat& frame = source ? gPreviewSourceFrame : gPreviewResultFrame;
+    if (frame.empty())
         return false;
 
     std::vector<uchar> encoded;
-    if (!cv::imencode(".jpg", gPreviewFrame, encoded))
+    if (!cv::imencode(".jpg", frame, encoded))
         return false;
     jpeg.assign(reinterpret_cast<const char*>(encoded.data()), encoded.size());
     return true;
@@ -123,7 +130,7 @@ button{margin:2px;padding:6px 12px;background:#333;color:#eee;border:1px solid #
 button:hover{background:#464}
 button.act{background:#464;border-color:#7a7}
 textarea{width:100%;height:320px;background:#181818;color:#9e9;font-family:monospace;font-size:12px}
-img{max-width:100%;border:1px solid #444}#st{margin-left:10px;color:#fb0}
+img{max-width:100%;border:1px solid #444}.streams{display:grid;grid-template-columns:1fr 1fr;gap:8px}.streams h4{margin:4px}#st{margin-left:10px;color:#fb0}
 details{border:1px solid #383838;margin:6px 0;background:#161616}
 details>summary{padding:5px 8px;cursor:pointer;background:#1e1e1e;color:#cda;font-weight:bold}
 details details>summary{font-weight:normal;color:#9bd}
@@ -135,7 +142,8 @@ details details>summary{font-weight:normal;color:#9bd}
 .hint{color:#666;font-size:12px}
 </style></head><body>
 <h3>SeeSharp vision</h3>
-<img id="v" alt="preview is not ready"><br>
+<div class="streams"><div><h4>Source</h4><img id="src" alt="source is not ready"></div>
+<div><h4>Detection result</h4><img id="v" alt="result is not ready"></div></div><br>
 <div id="modes"></div>
 <h4>Параметры <span class="hint">(секция активного режима + общие)</span></h4>
 <div><label class="hint"><input type="checkbox" id="all" onchange="render()"> показать все секции</label>
@@ -145,9 +153,30 @@ details details>summary{font-weight:normal;color:#9bd}
 <button onclick="send('/apply')">Применить (до перезапуска)</button>
 <button onclick="send('/config')">Сохранить (постоянно)</button>
 <button onclick="revert()">Откатить к сохранённому</button><span id="st"></span>
+<details><summary>CM5 system administration</summary><div class="body">
+<div class="row"><label>Admin token</label><input id="admToken" type="password"></div>
+<button onclick="adminGet('status')">System status</button>
+<button onclick="adminGet('processes')">Processes</button>
+<button onclick="adminGet('network')">Network</button>
+<button onclick="adminPost({op:'files',path:document.getElementById('admPath').value})">Files</button>
+<div class="row"><label>Path under file_root</label><input id="admPath" type="text" value="."></div>
+<button onclick="adminPost({op:'read_file',path:admPath.value})">Read file</button>
+<button onclick="adminPost({op:'write_file',path:admPath.value,content:admOut.value})">Write output to file</button>
+<div class="row"><label>PID</label><input id="admPid" type="number" min="2"></div>
+<button onclick="adminPost({op:'process',pid:Number(admPid.value),action:'stop'})">Stop</button>
+<button onclick="adminPost({op:'process',pid:Number(admPid.value),action:'kill'})">Kill</button>
+<button onclick="adminPost({op:'process',pid:Number(admPid.value),action:'pause'})">Pause</button>
+<button onclick="adminPost({op:'process',pid:Number(admPid.value),action:'resume'})">Resume</button>
+<div class="row"><label>Network request JSON</label><input id="admNet" type="text" value='{"op":"network","connection":"Wi-Fi","mode":"dhcp"}'></div>
+<button onclick="adminNetwork()">Apply network configuration</button>
+<div class="row"><label>Terminal command</label><input id="admCmd" type="text"></div>
+<button onclick="adminPost({op:'terminal',command:document.getElementById('admCmd').value})">Execute</button>
+<textarea id="admOut" spellcheck="false"></textarea>
+</div></details>
 <script>
-const modes=['off','aruco_detection','classification','blob_detection','line_detection','circle_detection'];
-setInterval(()=>document.getElementById('v').src='/preview.jpg?t='+Date.now(),200);
+const modes=['off','aruco_detection','object_detection','blob_detection','line_detection','circle_detection'];
+setInterval(()=>{const t=Date.now();document.getElementById('src').src='/source.jpg?t='+t;
+document.getElementById('v').src='/preview.jpg?t='+t;},200);
 const md=document.getElementById('modes');
 let cur='', cfgObj={};
 modes.forEach(m=>{const b=document.createElement('button');b.textContent=m;b.dataset.m=m;
@@ -231,6 +260,12 @@ function send(ep){
       if(ep==='/config')load(); else {cfgObj=o;cur=(o.general_params||{}).processing_mode||cur;mark();}});
 }
 function revert(){fetch('/revert').then(r=>r.text()).then(t=>{st.textContent=t;load();});}
+function admHeaders(){return {'X-Admin-Token':document.getElementById('admToken').value};}
+function adminShow(t){try{admOut.value=JSON.stringify(JSON.parse(t),null,2);}catch(e){admOut.value=t;}}
+function adminGet(view){fetch('/admin/'+view,{headers:admHeaders()}).then(r=>r.text()).then(adminShow);}
+function adminPost(body){fetch('/admin',{method:'POST',headers:admHeaders(),body:JSON.stringify(body)})
+  .then(r=>r.text()).then(adminShow);}
+function adminNetwork(){try{adminPost(JSON.parse(admNet.value));}catch(e){adminShow(e.message);}}
 load();
 </script></body></html>)HTML";
 
@@ -312,6 +347,70 @@ static void controlServer(int port)
         bool isApply = req.compare(0, 12, "POST /apply ") == 0;
         bool isSave = req.compare(0, 13, "POST /config ") == 0;
 
+#ifdef RASPBERRY_CM5
+        const bool isAdminPost = req.compare(0, 12, "POST /admin ") == 0;
+        const bool isAdminGet = req.compare(0, 11, "GET /admin/") == 0;
+        if ((isAdminPost || isAdminGet) &&
+            (!gSystemAdmin || !gSystemAdmin->authorized(req)))
+        {
+            sendResp(c, "application/json", R"({"error":"unauthorized"})");
+        }
+        else if (isAdminGet)
+        {
+            try
+            {
+                if (req.compare(0, 18, "GET /admin/status ") == 0)
+                    sendResp(c, "application/json", gSystemAdmin->status().dump());
+                else if (req.compare(0, 21, "GET /admin/processes ") == 0)
+                    sendResp(c, "application/json", gSystemAdmin->processes().dump());
+                else if (req.compare(0, 19, "GET /admin/network ") == 0)
+                    sendResp(c, "application/json", gSystemAdmin->network().dump());
+                else
+                    sendResp(c, "application/json", R"({"error":"unknown view"})");
+            }
+            catch (const std::exception& error)
+            {
+                sendResp(c, "application/json", nlohmann::json{{"error", error.what()}}.dump());
+            }
+        }
+        else if (isAdminPost && bodyStart != std::string::npos)
+        {
+            try
+            {
+                const auto body = nlohmann::json::parse(req.substr(bodyStart));
+                const std::string operation = body.at("op").get<std::string>();
+                if (operation == "files")
+                    sendResp(c, "application/json",
+                             gSystemAdmin->listFiles(body.value("path", ".")).dump());
+                else if (operation == "read_file")
+                    sendResp(c, "application/json", nlohmann::json{{"content",
+                        gSystemAdmin->readFile(body.at("path").get<std::string>())}}.dump());
+                else if (operation == "write_file")
+                {
+                    gSystemAdmin->writeFile(body.at("path").get<std::string>(),
+                                            body.at("content").get<std::string>());
+                    sendResp(c, "application/json", R"({"status":"ok"})");
+                }
+                else if (operation == "process")
+                    sendResp(c, "application/json", nlohmann::json{{"status",
+                        gSystemAdmin->processAction(body.at("pid").get<int>(),
+                                                    body.at("action").get<std::string>())}}.dump());
+                else if (operation == "network")
+                    sendResp(c, "application/json", nlohmann::json{{"output",
+                        gSystemAdmin->configureNetwork(body)}}.dump());
+                else if (operation == "terminal")
+                    sendResp(c, "application/json", nlohmann::json{{"output",
+                        gSystemAdmin->execute(body.at("command").get<std::string>())}}.dump());
+                else
+                    sendResp(c, "application/json", R"({"error":"unknown operation"})");
+            }
+            catch (const std::exception& error)
+            {
+                sendResp(c, "application/json", nlohmann::json{{"error", error.what()}}.dump());
+            }
+        }
+        else
+#endif
         if ((isApply || isSave) && bodyStart != std::string::npos)
         {
             try
@@ -388,10 +487,18 @@ static void controlServer(int port)
         else if (req.compare(0, 16, "GET /preview.jpg") == 0)
         {
             std::string jpeg;
-            if (getPreviewJpeg(jpeg))
+            if (getPreviewJpeg(false, jpeg))
                 sendResp(c, "image/jpeg", jpeg);
             else
                 sendResp(c, "text/plain", "preview is not ready\n");
+        }
+        else if (req.compare(0, 15, "GET /source.jpg") == 0)
+        {
+            std::string jpeg;
+            if (getPreviewJpeg(true, jpeg))
+                sendResp(c, "image/jpeg", jpeg);
+            else
+                sendResp(c, "text/plain", "source is not ready\n");
         }
         else if (req.compare(0, 12, "GET /config ") == 0)
         {
@@ -481,7 +588,7 @@ int main(int argc, char** argv)
 #endif
     Pipeline pipeline(source, manager, [&](const ProcessedItem& item) {
         ++frames;
-        updatePreview(item.result);
+        updatePreview(item.frame, item.result);
         if (!item.metadata.empty() && frames % 10 == 0)
         {
             std::cout << "det f" << frames << ":";
@@ -554,6 +661,9 @@ int main(int argc, char** argv)
         try
         {
             manager.reconfigure(j);
+#ifdef RASPBERRY_CM5
+            gSystemAdmin = std::make_unique<SystemAdmin>(j);
+#endif
             return "";
         }
         catch (const std::exception& e)
@@ -563,13 +673,14 @@ int main(int argc, char** argv)
     };
 
 #ifdef RASPBERRY_CM5
+    gSystemAdmin = std::make_unique<SystemAdmin>(reader.getRawConfig());
     transports = std::make_unique<TransportManager>(
         reader.getRawConfig(), [](uint8_t detectorCode) -> bool {
             const char* mode = nullptr;
             switch (detectorCode)
             {
                 case 0x00: mode = "off"; break;
-                case 0x01: mode = "classification"; break;
+                case 0x01: mode = "object_detection"; break;
                 case 0x02: mode = "aruco_detection"; break;
                 case 0x03: mode = "blob_detection"; break;
                 case 0x04: mode = "line_detection"; break;

@@ -11,6 +11,7 @@
 class DxlUartTransport;
 class UdpMetadataTransport;
 class UdpVideoTransport;
+class UsbStreamTransport;
 
 class TransportManager
 {
@@ -29,4 +30,5 @@ private:
     std::unique_ptr<DxlUartTransport> uart_;
     std::unique_ptr<UdpMetadataTransport> udp_;
     std::unique_ptr<UdpVideoTransport> video_;
+    std::unique_ptr<UsbStreamTransport> usb_;
 };

@@ -1,7 +1,13 @@
 {
+    "system_admin": {
+      "token": "",
+      "file_root": "/opt/seesharp",
+      "terminal_enabled": false
+    },
     "blob_detection": {
       "enable_one_color_detection": true,
       "enable_multicolor_detection": true,
+      "max_composite_objects": 5,
       "one_color_patterns":
       [
         {
@@ -23,7 +29,10 @@
           "min_inertia": 0.0,
           "max_inertia": 1.0,
           "min_convexity": 0.0,
-          "max_convexity": 1.0
+          "max_convexity": 1.0,
+          "min_vertices": 0,
+          "max_vertices": 0,
+          "polygon_approximation": 0.02
         },
         {
           "id": 1,
@@ -44,7 +53,10 @@
           "min_inertia": 0.0,
           "max_inertia": 1.0,
           "min_convexity": 0.0,
-          "max_convexity": 1.0
+          "max_convexity": 1.0,
+          "min_vertices": 0,
+          "max_vertices": 0,
+          "polygon_approximation": 0.02
         },
         {
           "id": 2,
@@ -59,7 +71,10 @@
           "min_inertia": 0.0,
           "max_inertia": 1.0,
           "min_convexity": 0.0,
-          "max_convexity": 1.0
+          "max_convexity": 1.0,
+          "min_vertices": 0,
+          "max_vertices": 0,
+          "polygon_approximation": 0.02
         }
       ],
       "multicolor_patterns":
@@ -192,6 +207,28 @@
                 "goal": 45.0,
                 "weight": 0
               }
+            },
+            {
+              "id": 3,
+              "blob_id": [0],
+              "threshold": 0.06,
+              "weight": 255,
+              "size": { "min": 0.0, "max": 5000.0, "goal": 350.0, "weight": 255 },
+              "circularity": { "min": 0.0, "max": 1.0, "goal": 0.5, "weight": 0 },
+              "inertia": { "min": 0.0, "max": 1.0, "goal": 0.5, "weight": 0 },
+              "convexity": { "min": 0.0, "max": 1.0, "goal": 0.5, "weight": 0 },
+              "angle": { "min": -180.0, "max": 180.0, "goal": 45.0, "weight": 0 }
+            },
+            {
+              "id": 4,
+              "blob_id": [1],
+              "threshold": 0.06,
+              "weight": 255,
+              "size": { "min": 0.0, "max": 5000.0, "goal": 350.0, "weight": 255 },
+              "circularity": { "min": 0.0, "max": 1.0, "goal": 0.5, "weight": 0 },
+              "inertia": { "min": 0.0, "max": 1.0, "goal": 0.5, "weight": 0 },
+              "convexity": { "min": 0.0, "max": 1.0, "goal": 0.5, "weight": 0 },
+              "angle": { "min": -180.0, "max": 180.0, "goal": 45.0, "weight": 0 }
             }
           ],
           "links":
@@ -294,6 +331,24 @@
                 "goal": 37.0,
                 "weight": 0
               }
+            },
+            {
+              "id": "0-3",
+              "threshold": 0.0,
+              "weight": 255,
+              "length_absolute": { "min": 0.0, "max": 100000.0, "goal": 350.0, "weight": 0 },
+              "length_relative": { "min": 0.0, "max": 10000.0, "goal": 0.5, "weight": 0 },
+              "angle_absolute": { "min": -180.0, "max": 180.0, "goal": 0.0, "weight": 0 },
+              "angle_relative": { "min": -180.0, "max": 180.0, "goal": 0.0, "weight": 0 }
+            },
+            {
+              "id": "0-4",
+              "threshold": 0.0,
+              "weight": 255,
+              "length_absolute": { "min": 0.0, "max": 100000.0, "goal": 350.0, "weight": 0 },
+              "length_relative": { "min": 0.0, "max": 10000.0, "goal": 0.5, "weight": 0 },
+              "angle_absolute": { "min": -180.0, "max": 180.0, "goal": 0.0, "weight": 0 },
+              "angle_relative": { "min": -180.0, "max": 180.0, "goal": 0.0, "weight": 0 }
             }
           ]
         }
@@ -309,7 +364,14 @@
       "hough_theta": 0.017453292519943295,
       "hough_threshold": 50,
       "hough_min_line_length": 30.0,
-      "hough_max_line_gap": 10.0
+      "hough_max_line_gap": 10.0,
+      "min_angle": -180.0,
+      "max_angle": 180.0,
+      "roi_x": 0.0,
+      "roi_y": 0.0,
+      "roi_width": 1.0,
+      "roi_height": 1.0,
+      "max_lines": 100
     },
     "circle_detection": {
       "min_radius": 10.0,
@@ -320,14 +382,27 @@
     },
     "aruco_detection": {
       "dictionary": "DICT_4X4_50",
-      "marker_length": 0.05
+      "marker_length": 0.05,
+      "allowed_ids": [],
+      "min_area": 100.0,
+      "max_area": 1000000.0
     },
-    "classification": {
-      "model_onnx": "simple_classifier.onnx",
-      "model_rknn": "simple_classifier.rknn",
-      "input_size": 64,
-      "score_threshold": 0.5,
-      "class_names": ["background", "target"]
+    "object_detection": {
+      "model_onnx": "yolo11n.onnx",
+      "class_names_file": "coco.names",
+      "class_names": [],
+      "input_width": 640,
+      "input_height": 640,
+      "confidence_threshold": 0.35,
+      "nms_threshold": 0.45,
+      "max_objects": 10
+    },
+    "training": {
+      "data_yaml": "dataset.yaml",
+      "base_model": "yolo11n.pt",
+      "epochs": 50,
+      "image_size": 640,
+      "output_onnx": "custom_yolo.onnx"
     },
     "transports": {
       "udp_metadata": {
@@ -343,12 +418,22 @@
         "packet_size": 1400,
         "max_fps": 15
       },
+      "usb_stream": {
+        "enabled": false,
+        "device": "/dev/ttyGS0",
+        "metadata": true,
+        "video": true,
+        "jpeg_quality": 80,
+        "max_fps": 15
+      },
       "uart_dxl": {
         "enabled": true,
         "device": "/dev/serial0",
         "baud": 115200,
         "id": 100,
         "rs485": false,
+        "startup_push": true,
+        "push_interval_ms": 33,
         "eeprom_file": "dxl_eeprom.bin"
       }
     },
@@ -356,6 +441,10 @@
     {
       "processing_mode": "aruco_detection",
       "camera_rotation": 0,
+      "exposure_ev": 0.0,
+      "white_balance_bgr": [1.0, 1.0, 1.0],
+      "contrast": 1.0,
+      "brightness": 0.0,
       "debug_mode": true
     }
 }

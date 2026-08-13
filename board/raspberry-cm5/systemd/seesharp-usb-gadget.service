@@ -1,0 +1,12 @@
+[Unit]
+Description=SeeSharp USB CDC ACM and Ethernet gadget
+After=systemd-modules-load.service
+Before=seesharp-cm5.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/seesharp-usb-gadget
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

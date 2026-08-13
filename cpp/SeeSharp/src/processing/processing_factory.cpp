@@ -8,9 +8,15 @@
 #include "config/config_keys.hpp"
 #include "model/general_params.hpp"
 #include "processing/aruco_processor.hpp"
+#ifdef MTV3_BOARD
 #include "model/classifier_params.hpp"
 #include "processing/classifier_processor.hpp"
+#else
+#include "model/yolo_params.hpp"
+#include "processing/yolo_processor.hpp"
+#endif
 #include "processing/passthrough_processor.hpp"
+#include "model/aruco_params.hpp"
 
 std::unique_ptr<IFrameProcessor> ProcessingFactory::createProcessor(const nlohmann::json& rawConfig)
 {
@@ -39,14 +45,25 @@ std::unique_ptr<IFrameProcessor> ProcessingFactory::createProcessor(const nlohma
         }
         case ProcessingType::ArucoDetection:
         {
-            // TODO (DD): Do we need aruco params?
-            return std::make_unique<ArucoProcessor>();
+            ArucoParams params = Automapper::mapParams<ArucoParams>(
+                rawConfig, ConfigKeys::ARUCO_DETECTION_CONFIG_ID);
+            return std::make_unique<ArucoProcessor>(params);
         }
         case ProcessingType::Classification:
+#ifdef MTV3_BOARD
         {
-            ClassifierParams params = Automapper::mapParams<ClassifierParams>(rawConfig, ConfigKeys::CLASSIFICATION_CONFIG_ID);
+            ClassifierParams params = rawConfig.at("classification").get<ClassifierParams>();
             return std::make_unique<ClassifierProcessor>(params);
         }
+        case ProcessingType::ObjectDetection:
+            throw std::runtime_error("YOLO object detection is not available in the MTV3 RKNN build");
+#else
+        case ProcessingType::ObjectDetection:
+        {
+            YoloParams params = rawConfig.at("object_detection").get<YoloParams>();
+            return std::make_unique<YoloProcessor>(params);
+        }
+#endif
         /*
         case ProcessingType::Calibration:
             return createCalibrationProcessor(rawConfig);

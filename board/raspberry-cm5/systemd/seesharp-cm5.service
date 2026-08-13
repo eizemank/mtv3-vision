@@ -1,15 +1,19 @@
 [Unit]
 Description=SeeSharp vision pipeline for Raspberry Pi CM5
-After=network-online.target
-Wants=network-online.target
+DefaultDependencies=no
+After=local-fs.target systemd-modules-load.service systemd-udev-trigger.service
+Before=basic.target network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/seesharp
-ExecStart=/usr/bin/libcamerify /opt/seesharp/mainCV --camera 0 --config /opt/seesharp/config.json --dump 10 --dump-dir /tmp/seesharp
+ExecStart=/usr/bin/libcamerify /opt/seesharp/mainCV --camera 0 --config /opt/seesharp/config.json
 Restart=always
-RestartSec=2
+RestartSec=250ms
+Nice=-5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=0
 SupplementaryGroups=dialout
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=sysinit.target

@@ -24,6 +24,7 @@ inline uint8_t detectorTypeCode(ProcessingType type)
     {
         case ProcessingType::Off: return 0x00;
         case ProcessingType::Classification: return 0x01;
+        case ProcessingType::ObjectDetection: return 0x01;
         case ProcessingType::ArucoDetection: return 0x02;
         case ProcessingType::BlobDetection: return 0x03;
         case ProcessingType::LineDetection: return 0x04;
@@ -38,6 +39,7 @@ inline const char* detectorTypeName(ProcessingType type)
     {
         case ProcessingType::Off: return "off";
         case ProcessingType::Classification: return "classification";
+        case ProcessingType::ObjectDetection: return "object_detection";
         case ProcessingType::ArucoDetection: return "aruco";
         case ProcessingType::BlobDetection: return "blob";
         case ProcessingType::LineDetection: return "line";

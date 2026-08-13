@@ -21,10 +21,17 @@ The `transports` section in `config.json` controls metadata outputs:
     "baud": 115200,
     "id": 100,
     "rs485": false,
+    "startup_push": true,
+    "push_interval_ms": 33,
     "eeprom_file": "dxl_eeprom.bin"
   }
 }
 ```
+
+`startup_push` starts autonomous status packets only after the first processed
+frame has populated the Control Table. This supports the 12-second power-on to
+first-detection-packet requirement. Disable it on a shared bus unless the bus
+master provides a collision-free transmission window.
 
 Restart `mainCV` after changing this section. Detector parameters and mode can
 still be reloaded while the process is running.
@@ -35,9 +42,14 @@ The built-in HTTP server listens on port 8081:
 
 - `/` — live preview and configuration UI;
 - `/preview.jpg` — latest annotated JPEG;
+- `/source.jpg` — latest source-camera JPEG;
 - `/config` — active JSON configuration.
+- `/admin/status`, `/admin/processes`, `/admin/network` — token-protected CM5
+  system information.
+- `POST /admin` — token-protected process, network, file and terminal actions.
 
-The page requests `/preview.jpg` periodically. This is intentionally simpler
+The page requests `/source.jpg` and `/preview.jpg` periodically and displays
+the source and annotated result simultaneously. This is intentionally simpler
 and more robust on CM5 than keeping a long multipart MJPEG connection. It also
 allows any client to select its own refresh rate.
 
@@ -194,3 +206,57 @@ stty -F /dev/serial0 115200 raw -echo
 For manual startup as a non-root user, add it to `dialout` once with
 `sudo usermod -aG dialout "$USER"` and log in again. The supplied systemd unit
 already requests the `dialout` supplementary group.
+
+## USB metadata, video and web UI
+
+CM5 exposes a composite CDC ACM and CDC ECM USB gadget. USB Ethernet uses
+`192.168.7.2/24`; assign `192.168.7.1/24` to the host and open
+`http://192.168.7.2:8081/` for the complete configuration and video UI.
+SeeSharp also writes JSON
+metadata and annotated JPEG frames to `/dev/ttyGS0` from a dedicated worker,
+so a slow host does not block capture or detection.
+
+```json
+"usb_stream": {
+  "enabled": true,
+  "device": "/dev/ttyGS0",
+  "metadata": true,
+  "video": true,
+  "jpeg_quality": 80,
+  "max_fps": 15
+}
+```
+
+The byte stream consists of records with a 16-byte big-endian header:
+
+| Offset | Size | Field | Description |
+|---:|---:|---|---|
+| 0 | 4 | magic | ASCII `MTVU` |
+| 4 | 1 | version | `1` |
+| 5 | 1 | message_type | `1` JSON metadata, `2` JPEG video |
+| 6 | 2 | flags | Reserved, zero |
+| 8 | 4 | frame_id | Associates metadata and image |
+| 12 | 4 | payload_size | Number of following bytes |
+
+Metadata uses the same `detection_frame` JSON as UDP metadata. A video payload
+is one complete JPEG and does not require UDP-style fragment assembly.
+
+The carrier board port must support USB device/peripheral mode. Install the
+gadget on CM5 and reboot:
+
+```bash
+cd ~/mtv3-vision
+sudo sh board/raspberry-cm5/setup_usb_gadget.sh
+sudo reboot
+ls -l /dev/ttyGS0
+```
+
+The Linux host normally enumerates it as `/dev/ttyACM0`:
+
+```bash
+sudo apt install python3-serial python3-opencv python3-numpy
+python3 board/raspberry-cm5/usb_stream_receiver.py /dev/ttyACM0
+```
+
+On Windows pass the assigned COM port, for example `COM7`. The receiver prints
+detector/object counts and displays annotated frames. Press `Esc` to exit.

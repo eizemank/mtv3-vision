@@ -1,5 +1,7 @@
 #include "processing/blob_processor.hpp"
 
+#include <algorithm>
+
 // -*-*-*-*- "It's a battle between code readability and performance" -*-*-*-*-
 
 constexpr const int MAX_CRITERIA_WEIGHT = 255;
@@ -34,10 +36,11 @@ std::pair<cv::Mat, std::vector<BlobMetaData>> BlobProcessor::process(cv::Mat& fr
         multiColorBlobs = getMultiColorBlobs(detectedOneColorBlobs);
     }
 
-    // TODO (DD): Get metadata for multi-color blobs
-
     // Prepare metadata
     std::vector<BlobMetaData> metaDataBlobs = getMetaDataBlobs(detectedOneColorBlobs);
+    auto compositeMetaData = getCompositeMetaData(multiColorBlobs);
+    metaDataBlobs.insert(metaDataBlobs.end(), compositeMetaData.begin(),
+                         compositeMetaData.end());
 
     // Draw contours on the result frame
     cv::Mat resultFrame = frame.clone();
@@ -141,6 +144,7 @@ std::vector<DetectedMulticolorBlob> BlobProcessor::getMultiColorBlobs(std::unord
                 return;
 
             DetectedMulticolorBlob detectedMultiColorBlob;
+            detectedMultiColorBlob.patternId = multiColorParams.id;
             detectedMultiColorBlob.similarity = overallScore;
             detectedMultiColorBlob.contour = getMergedContours(nodeCombination);
             detectedMultiColorBlob.nodeCandidates = nodeCombination;
@@ -148,6 +152,13 @@ std::vector<DetectedMulticolorBlob> BlobProcessor::getMultiColorBlobs(std::unord
             multiColorBlobs.push_back(detectedMultiColorBlob);
         });
     }
+
+    std::sort(multiColorBlobs.begin(), multiColorBlobs.end(),
+              [](const auto& left, const auto& right) {
+                  return left.similarity > right.similarity;
+              });
+    if (multiColorBlobs.size() > static_cast<size_t>(params_.maxCompositeObjects))
+        multiColorBlobs.resize(params_.maxCompositeObjects);
 
     return multiColorBlobs;
 }
@@ -253,6 +264,9 @@ bool BlobProcessor::defineAndCheckLinkCandidates(std::vector<LinkCandidate>& lin
         // LinkId is "0-1" or "1-2", so we can use it to get the nodes
         size_t firstNodeIndex = linkSettings.getFirstNodeId();
         size_t secondNodeIndex = linkSettings.getSecondNodeId();
+        if (firstNodeIndex >= nodeCombination.size() ||
+            secondNodeIndex >= nodeCombination.size())
+            return false;
 
         cv::Point2f p1 = nodeCombination[firstNodeIndex].detectedBlob.center;
         cv::Point2f p2 = nodeCombination[secondNodeIndex].detectedBlob.center;
@@ -498,6 +512,25 @@ std::vector<BlobMetaData> BlobProcessor::getMetaDataBlobs(const std::unordered_m
     return metaDataBlobs;
 }
 
+std::vector<BlobMetaData> BlobProcessor::getCompositeMetaData(
+    const std::vector<DetectedMulticolorBlob>& multiColorBlobs)
+{
+    std::vector<BlobMetaData> metadata;
+    metadata.reserve(multiColorBlobs.size());
+    for (const auto& composite : multiColorBlobs)
+    {
+        const cv::Rect boundingBox = cv::boundingRect(composite.contour);
+        BlobMetaData item;
+        item.id = composite.patternId;
+        item.center = {boundingBox.x + boundingBox.width * 0.5f,
+                       boundingBox.y + boundingBox.height * 0.5f};
+        item.area = cv::contourArea(composite.contour);
+        item.boundingBox = boundingBox;
+        metadata.push_back(item);
+    }
+    return metadata;
+}
+
 cv::Mat BlobProcessor::getMask(const OneColorBlobParams& params, cv::Mat& colorConverted)
 {
     cv::Scalar lower(params.lowerRange[0], params.lowerRange[1], params.lowerRange[2]);
@@ -525,11 +558,20 @@ void BlobProcessor::binariseFrame(cv::Mat& frame, cv::Mat& binarisedFrame, cv::M
 
 bool BlobProcessor::isBlobFit(const DetectedBlob detectedBlob, const OneColorBlobParams& params)
 {
+    std::vector<cv::Point> polygon;
+    cv::approxPolyDP(detectedBlob.contour, polygon,
+                     params.polygonApproximation *
+                         cv::arcLength(detectedBlob.contour, true),
+                     true);
+    const bool verticesOk =
+        (params.minVertices <= 0 || polygon.size() >= static_cast<size_t>(params.minVertices)) &&
+        (params.maxVertices <= 0 || polygon.size() <= static_cast<size_t>(params.maxVertices));
     bool result = (isAreaOk(detectedBlob.area, params.minArea, params.maxArea) &&
         isCircularityOk(detectedBlob.circularity, params.minCircularity, params.maxCircularity) &&
         isInertiaOk(detectedBlob.inertia, params.minInertia, params.maxInertia) &&
         isConvexityOk(detectedBlob.convexity, params.minConvexity, params.maxConvexity) &&
-        isSizeOk(detectedBlob.boundingBox, params.minWidth, params.minHeight));
+        isSizeOk(detectedBlob.boundingBox, params.minWidth, params.minHeight) &&
+        verticesOk);
 
     return result;
 }

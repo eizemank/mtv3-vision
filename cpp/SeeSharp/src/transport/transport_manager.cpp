@@ -5,6 +5,7 @@
 #include "transport/dxl_uart_transport.hpp"
 #include "transport/udp_metadata_transport.hpp"
 #include "transport/udp_video_transport.hpp"
+#include "transport/usb_stream_transport.hpp"
 
 TransportManager::TransportManager(const nlohmann::json& config,
                                    DetectorCallback detectorCallback)
@@ -24,6 +25,16 @@ TransportManager::TransportManager(const nlohmann::json& config,
                       << std::endl;
             udp_.reset();
         }
+    }
+
+    const nlohmann::json usb = transports.value(
+        "usb_stream", nlohmann::json::object());
+    if (usb.value("enabled", false))
+    {
+        usb_ = std::make_unique<UsbStreamTransport>(
+            usb.value("device", "/dev/ttyGS0"),
+            usb.value("jpeg_quality", 80), usb.value("max_fps", 15),
+            usb.value("metadata", true), usb.value("video", true));
     }
 
     const nlohmann::json video = transports.value(
@@ -54,7 +65,9 @@ TransportManager::TransportManager(const nlohmann::json& config,
             static_cast<uint8_t>(uart.value("id", 100)),
             uart.value("rs485", false),
             uart.value("eeprom_file", "dxl_eeprom.bin"),
-            std::move(detectorCallback));
+            std::move(detectorCallback),
+            uart.value("startup_push", true),
+            static_cast<uint8_t>(uart.value("push_interval_ms", 33)));
         if (!uart_->isOpen())
             uart_.reset();
     }
@@ -70,4 +83,6 @@ void TransportManager::publish(const VisionFrame& frame, const cv::Mat& image)
         udp_->publish(frame);
     if (video_)
         video_->publish(frame.frameId, frame.timestampMs, image);
+    if (usb_)
+        usb_->publish(frame, image);
 }

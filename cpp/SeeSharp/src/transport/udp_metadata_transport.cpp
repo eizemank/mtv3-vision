@@ -82,7 +82,8 @@ void UdpMetadataTransport::sendFrame(const VisionFrame& frame)
         const float height = std::max(1, static_cast<int>(frame.imageHeight));
         detections.push_back({
             {"class_id", object.id},
-            {"confidence", frame.detectorType == ProcessingType::Classification
+            {"confidence", (frame.detectorType == ProcessingType::Classification ||
+                             frame.detectorType == ProcessingType::ObjectDetection)
                                    ? object.area : 1.0},
             {"center", {object.center.x / width, object.center.y / height}},
             {"bbox", {

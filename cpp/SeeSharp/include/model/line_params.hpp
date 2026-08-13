@@ -12,4 +12,11 @@ struct LineParams
     int threshold;         // minimum number of votes
     double minLineLength;  // minimum line length
     double maxLineGap;     // maximum allowed gap between points on the same line
+    double minAngle = -180.0;
+    double maxAngle = 180.0;
+    double roiX = 0.0;
+    double roiY = 0.0;
+    double roiWidth = 1.0;
+    double roiHeight = 1.0;
+    int maxLines = 100;
 };

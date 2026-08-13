@@ -22,6 +22,9 @@ struct OneColorBlobParams
     double maxInertia;
     double minConvexity;
     double maxConvexity;
+    int minVertices = 0;
+    int maxVertices = 0;
+    double polygonApproximation = 0.02;
 };
 
 /// @brief Enum to define the base measure of size for the blob
@@ -161,6 +164,7 @@ struct BlobParams
 {
     bool enableOneColorDetection;
     bool enableMultiColorDetection;
+    int maxCompositeObjects = 5;
 
     std::vector<OneColorBlobParams> oneColorBlobParams;
     std::vector<MultiColorBlobParams> multiColorBlobParams;

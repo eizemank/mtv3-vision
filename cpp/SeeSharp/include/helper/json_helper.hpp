@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <stdexcept>
 
 #include <nlohmann/json.hpp>
@@ -55,6 +56,9 @@ inline void from_json(const nlohmann::json& j, OneColorBlobParams& p)
     j.at("max_inertia").get_to(p.maxInertia);
     j.at("min_convexity").get_to(p.minConvexity);
     j.at("max_convexity").get_to(p.maxConvexity);
+    p.minVertices = j.value("min_vertices", 0);
+    p.maxVertices = j.value("max_vertices", 0);
+    p.polygonApproximation = j.value("polygon_approximation", 0.02);
 
     auto lower = j["lower_range"];
     auto upper = j["upper_range"];
@@ -71,12 +75,15 @@ inline void from_json(const nlohmann::json& j, MultiColorBlobParams& p)
 
     j.at("nodes").get_to(p.nodes);
     j.at("links").get_to(p.links);
+    if (p.nodes.empty() || p.nodes.size() > 5)
+        throw std::invalid_argument("A composite object must contain from 1 to 5 primitives");
 }
 
 inline void from_json(const nlohmann::json& j, BlobParams& p)
 {
     j.at(ConfigKeys::ENABLE_ONE_COLOR_DETECTION).get_to(p.enableOneColorDetection);
     j.at(ConfigKeys::ENABLE_MULTICOLOR_DETECTION).get_to(p.enableMultiColorDetection);
+    p.maxCompositeObjects = std::clamp(j.value("max_composite_objects", 5), 1, 5);
     j.at(ConfigKeys::ONE_COLOR_BLOB_PATTERNS_CONFIG_ID).get_to(p.oneColorBlobParams);
     j.at(ConfigKeys::MULTICOLOR_BLOB_PATTERNS_CONFIG_ID).get_to(p.multiColorBlobParams);
 }
@@ -93,6 +100,13 @@ inline void from_json(const nlohmann::json& j, LineParams& p)
     j.at(ConfigKeys::HOUGH_THETA).get_to(p.threshold);
     j.at(ConfigKeys::HOUGH_MIN_LINE_LENGTH).get_to(p.minLineLength);
     j.at(ConfigKeys::HOUGH_MAX_LINE_GAP).get_to(p.maxLineGap);
+    p.minAngle = j.value("min_angle", -180.0);
+    p.maxAngle = j.value("max_angle", 180.0);
+    p.roiX = j.value("roi_x", 0.0);
+    p.roiY = j.value("roi_y", 0.0);
+    p.roiWidth = j.value("roi_width", 1.0);
+    p.roiHeight = j.value("roi_height", 1.0);
+    p.maxLines = j.value("max_lines", 100);
 }
 
 inline void from_json(const nlohmann::json& j, CircleParams& p)
@@ -109,6 +123,16 @@ inline void from_json(const nlohmann::json& j, GeneralParams& p)
     j.at(ConfigKeys::DEBUG_MODE).get_to(p.debugMode);
     p.processingType = processingTypeFromString(j.at(ConfigKeys::PROCESSING_MODE).get<std::string>());
     p.cameraRotation = j.value("camera_rotation", 0);
+    p.exposureEv = j.value("exposure_ev", 0.0);
+    p.contrast = j.value("contrast", 1.0);
+    p.brightness = j.value("brightness", 0.0);
+    const auto whiteBalance = j.value(
+        "white_balance_bgr", std::vector<double>{1.0, 1.0, 1.0});
+    if (whiteBalance.size() != 3)
+        throw std::invalid_argument("white_balance_bgr must contain 3 gains");
+    p.whiteBalanceBlue = whiteBalance[0];
+    p.whiteBalanceGreen = whiteBalance[1];
+    p.whiteBalanceRed = whiteBalance[2];
     if (p.cameraRotation != 0 && p.cameraRotation != 90 &&
         p.cameraRotation != 180 && p.cameraRotation != 270)
         throw std::invalid_argument(
