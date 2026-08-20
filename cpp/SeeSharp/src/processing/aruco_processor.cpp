@@ -4,7 +4,7 @@
 
 namespace
 {
-cv::aruco::PREDEFINED_DICTIONARY_NAME dictionaryByName(const std::string& name)
+int dictionaryByName(const std::string& name)
 {
     if (name == "DICT_4X4_100") return cv::aruco::DICT_4X4_100;
     if (name == "DICT_4X4_250") return cv::aruco::DICT_4X4_250;

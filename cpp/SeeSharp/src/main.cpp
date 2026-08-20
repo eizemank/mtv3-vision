@@ -27,7 +27,7 @@
 #include "transport/transport_manager.hpp"
 #endif
 
-#if defined(MTV3_BOARD) || defined(RASPBERRY_CM5)
+#if defined(MTV3_BOARD) || defined(RASPBERRY_CM5) || defined(HOST_WEB_UI)
 #ifndef _WIN32
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -46,6 +46,8 @@
 
 #ifdef MTV3_BOARD
 #include "pipeline/shm_source.hpp"
+#elif defined(HOST_WEB_UI)
+#include "pipeline/synthetic_source.hpp"
 #else
 #include "pipeline/camera_source.hpp"
 #endif
@@ -53,7 +55,7 @@
 // путь к конфигу (--config); по умолчанию рядом с бинарником (cwd)
 static std::string gConfigPath = "config.json";
 
-#if defined(MTV3_BOARD) || defined(RASPBERRY_CM5)
+#if defined(MTV3_BOARD) || defined(RASPBERRY_CM5) || defined(HOST_WEB_UI)
 static time_t cfgMtime(const char* path)
 {
     struct stat st{};
@@ -568,6 +570,9 @@ int main(int argc, char** argv)
         return -1;
     }
     std::cout << "shm source: " << source.width() << "x" << source.height() << std::endl;
+#elif defined(HOST_WEB_UI)
+    SyntheticSource source;
+    std::cout << "host UI source: synthetic 640x480 @ 30 FPS" << std::endl;
 #else
     CameraSource source(cameraDevice);
     if (!source.isOpened())
@@ -578,7 +583,7 @@ int main(int argc, char** argv)
 #endif
 
     // 5. Sink
-#if defined(MTV3_BOARD) || defined(RASPBERRY_CM5)
+#if defined(MTV3_BOARD) || defined(RASPBERRY_CM5) || defined(HOST_WEB_UI)
     // headless: fps раз в 100 кадров; сюда же встанет отправка metadata наружу
     auto t0 = std::chrono::steady_clock::now();
     long frames = 0;
@@ -654,7 +659,7 @@ int main(int argc, char** argv)
     });
 #endif
 
-#if defined(MTV3_BOARD) || defined(RASPBERRY_CM5)
+#if defined(MTV3_BOARD) || defined(RASPBERRY_CM5) || defined(HOST_WEB_UI)
     // применение конфига из веб-интерфейса (проверка боем: ошибка -> текст,
     // старый анализатор остаётся живым)
     gApply = [&manager](const nlohmann::json& j) -> std::string {
@@ -736,13 +741,13 @@ int main(int argc, char** argv)
     // 6. Запуск (блокируется до остановки)
     pipeline.start();
 
-#if defined(MTV3_BOARD) || defined(RASPBERRY_CM5)
+#if defined(MTV3_BOARD) || defined(RASPBERRY_CM5) || defined(HOST_WEB_UI)
     ctlRun = false;
     watcher.join();
 #endif
 
     source.release();
-#if !defined(MTV3_BOARD) && !defined(RASPBERRY_CM5)
+#if !defined(MTV3_BOARD) && !defined(RASPBERRY_CM5) && !defined(HOST_WEB_UI)
     cv::destroyAllWindows();
 #endif
     return 0;

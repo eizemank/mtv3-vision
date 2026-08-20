@@ -13,7 +13,7 @@ enabled. Install the runtime and build dependencies:
 ```bash
 sudo apt update
 sudo apt install -y build-essential cmake pkg-config libopencv-dev \
-    nlohmann-json3-dev libcamera-tools libcamera-v4l2 python3-venv
+    nlohmann-json3-dev libcamera-tools libcamera-v4l2 python3 curl
 ```
 
 Check the camera before building:
@@ -40,14 +40,15 @@ cmake --build . -j"$(nproc)"
 ```
 
 The build copies `common/config/config.json` into `build-cm5/config.json`.
-To download the pretrained YOLO11n COCO model and export it to ONNX, run:
+To download the pretrained YOLO11n COCO ONNX model, run:
 
 ```bash
 cmake --build . --target download_yolo11n
 ```
 
-The target creates a local Python venv for export, installs Ultralytics, writes
-`yolo11n.onnx` and COCO labels, and selects `object_detection`. The detector
+The target downloads `yolo11n.onnx` with retry/resume support, writes COCO
+labels, and selects `object_detection`. It does not install PyTorch or
+Ultralytics. The detector
 returns independent bounding boxes and applies confidence filtering, NMS and
 the configured `max_objects` limit (10 by default).
 

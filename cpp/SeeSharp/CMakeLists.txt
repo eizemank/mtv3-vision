@@ -10,9 +10,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 #         -DMTV3_BOARD=ON ..
 option(MTV3_BOARD "Build for MTV3 board (ShmSource + headless)" OFF)
 option(RASPBERRY_CM5 "Build for Raspberry Pi Compute Module 5 (V4L2 + headless)" OFF)
+option(HOST_WEB_UI "Build host test version with synthetic video and web UI" OFF)
 
-if(MTV3_BOARD AND RASPBERRY_CM5)
-    message(FATAL_ERROR "MTV3_BOARD and RASPBERRY_CM5 cannot be enabled together")
+if((MTV3_BOARD AND RASPBERRY_CM5) OR
+   (MTV3_BOARD AND HOST_WEB_UI) OR
+   (RASPBERRY_CM5 AND HOST_WEB_UI))
+    message(FATAL_ERROR "MTV3_BOARD, RASPBERRY_CM5 and HOST_WEB_UI are mutually exclusive")
+endif()
+if(HOST_WEB_UI AND WIN32)
+    message(FATAL_ERROR "HOST_WEB_UI currently requires Linux or WSL")
 endif()
 
 find_package(OpenCV REQUIRED)
@@ -76,13 +82,20 @@ target_include_directories(mainCV PRIVATE
 
 if(RASPBERRY_CM5)
     target_compile_definitions(mainCV PRIVATE RASPBERRY_CM5)
+endif()
+
+if(RASPBERRY_CM5 OR HOST_WEB_UI)
     add_custom_target(download_yolo11n
         COMMAND sh
             ${CMAKE_SOURCE_DIR}/../../board/raspberry-cm5/download_yolo11n.sh
             ${CMAKE_BINARY_DIR}
             ${CMAKE_BINARY_DIR}/config.json
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-        COMMENT "Downloading and exporting YOLO11n for OpenCV DNN")
+        COMMENT "Downloading YOLO11n ONNX for OpenCV DNN")
+endif()
+
+if(HOST_WEB_UI)
+    target_compile_definitions(mainCV PRIVATE HOST_WEB_UI)
 endif()
 
 # конфиг: единый sw/common/config/config.json; локальный config/ — fallback

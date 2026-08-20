@@ -3,29 +3,20 @@ set -eu
 
 DEST_DIR="${1:-.}"
 CONFIG_PATH="${2:-$DEST_DIR/config.json}"
-VENV="$DEST_DIR/.yolo-export"
-MODEL_URL="https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo11n.pt"
+MODEL_URL="https://huggingface.co/webnn/yolo11n/resolve/main/onnx/yolo11n.onnx?download=true"
 LABELS_URL="https://raw.githubusercontent.com/pjreddie/darknet/master/data/coco.names"
 
 mkdir -p "$DEST_DIR"
-python3 -m venv "$VENV"
-"$VENV/bin/pip" install --disable-pip-version-check --quiet ultralytics onnx
-curl --fail --location --retry 3 --output "$DEST_DIR/yolo11n.pt" "$MODEL_URL"
-curl --fail --location --retry 3 --output "$DEST_DIR/coco.names" "$LABELS_URL"
-
-"$VENV/bin/python" - "$DEST_DIR" <<'PY'
-import sys
-from pathlib import Path
-from ultralytics import YOLO
-
-destination = Path(sys.argv[1]).resolve()
-model = YOLO(str(destination / "yolo11n.pt"))
-exported = Path(model.export(format="onnx", imgsz=640, opset=12,
-                             simplify=True, dynamic=False, nms=False))
-target = destination / "yolo11n.onnx"
-if exported.resolve() != target.resolve():
-    target.write_bytes(exported.read_bytes())
-PY
+MODEL_PART="$DEST_DIR/yolo11n.onnx.part"
+curl --fail --location --retry 8 --retry-all-errors --connect-timeout 20 \
+    --continue-at - --output "$MODEL_PART" "$MODEL_URL"
+if [ "$(wc -c < "$MODEL_PART")" -lt 1000000 ]; then
+    echo "Downloaded ONNX file is unexpectedly small" >&2
+    exit 1
+fi
+mv "$MODEL_PART" "$DEST_DIR/yolo11n.onnx"
+curl --fail --location --retry 8 --retry-all-errors --connect-timeout 20 \
+    --output "$DEST_DIR/coco.names" "$LABELS_URL"
 
 python3 - "$CONFIG_PATH" <<'PY'
 import json

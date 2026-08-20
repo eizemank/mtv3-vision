@@ -27,3 +27,11 @@ sw/
   движков. Менять — только синхронно.
 * Прод-цель — C++ на модуле (см. `board/mtv3-rv1126/README.md`);
   python-ветка на модуль не ставится (python в buildroot не собирается).
+# Host UI test
+
+The CM5 web interface and detector configuration can be tested without target
+hardware using the synthetic host build. See `board/host/README.md` or run:
+
+```bash
+sh board/host/run_web_ui.sh
+```
