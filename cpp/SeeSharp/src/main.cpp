@@ -90,7 +90,8 @@ static bool getPreviewJpeg(bool source, std::string& jpeg)
     }
 
     std::vector<uchar> encoded;
-    if (!cv::imencode(".jpg", frame, encoded))
+    const std::vector<int> encodeParams{cv::IMWRITE_JPEG_QUALITY, 80};
+    if (!cv::imencode(".jpg", frame, encoded, encodeParams))
         return false;
     jpeg.assign(reinterpret_cast<const char*>(encoded.data()), encoded.size());
     return true;
@@ -189,22 +190,14 @@ details details>summary{font-weight:normal;color:#9bd}
 </div></details>
 <script>
 const modes=['off','aruco_detection','object_detection','blob_detection','line_detection','circle_detection'];
-const imageUrls={};
-async function refreshImage(id,path){
-  try{
-    const response=await fetch(path+'?t='+Date.now(),{cache:'no-store'});
-    const type=response.headers.get('content-type')||'';
-    if(!response.ok||!type.startsWith('image/jpeg'))throw new Error('frame is not ready');
-    const blob=await response.blob(),url=URL.createObjectURL(blob),image=document.getElementById(id);
-    await new Promise((resolve,reject)=>{image.onload=resolve;image.onerror=reject;image.src=url;});
-    if(id==='src')resizeSelectionOverlay();
-    if(imageUrls[id])URL.revokeObjectURL(imageUrls[id]);
-    imageUrls[id]=url;
-  }catch(error){}
-  setTimeout(()=>refreshImage(id,path),200);
+function startVideoStream(id,path){
+  const image=document.getElementById(id);
+  image.onload=()=>{if(id==='src')resizeSelectionOverlay();};
+  image.onerror=()=>setTimeout(()=>{image.src=path+'?t='+Date.now();},1000);
+  image.src=path+'?t='+Date.now();
 }
-refreshImage('src','/source.jpg');
-refreshImage('v','/preview.jpg');
+startVideoStream('src','/source.mjpg');
+startVideoStream('v','/preview.mjpg');
 const selectionCanvas=document.getElementById('selection'),selectionContext=selectionCanvas.getContext('2d');
 let selectionStart=null,selectionRect=null;
 function resizeSelectionOverlay(){
@@ -463,6 +456,36 @@ static void sendResp(int c, const char* type, const std::string& body)
         sendAll(c, body.data(), body.size());
 }
 
+static void sendMjpegStream(int c, bool source)
+{
+    static constexpr char header[] =
+        "HTTP/1.0 200 OK\r\n"
+        "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
+        "Cache-Control: no-store, no-cache, must-revalidate\r\n"
+        "Pragma: no-cache\r\n"
+        "Connection: close\r\n\r\n";
+    if (!sendAll(c, header, sizeof(header) - 1))
+        return;
+
+    while (true)
+    {
+        std::string jpeg;
+        if (getPreviewJpeg(source, jpeg))
+        {
+            char partHeader[128];
+            int size = snprintf(partHeader, sizeof(partHeader),
+                                "--frame\r\nContent-Type: image/jpeg\r\n"
+                                "Content-Length: %zu\r\n\r\n",
+                                jpeg.size());
+            if (!sendAll(c, partHeader, static_cast<size_t>(size)) ||
+                !sendAll(c, jpeg.data(), jpeg.size()) ||
+                !sendAll(c, "\r\n", 2))
+                return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(67));
+    }
+}
+
 static void controlServer(int port)
 {
     int sfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -472,7 +495,7 @@ static void controlServer(int port)
     a.sin_family = AF_INET;
     a.sin_port = htons(port);
     a.sin_addr.s_addr = INADDR_ANY;
-    if (bind(sfd, (struct sockaddr*)&a, sizeof(a)) || listen(sfd, 2))
+    if (bind(sfd, (struct sockaddr*)&a, sizeof(a)) || listen(sfd, 16))
     {
         perror("control bind/listen");
         return;
@@ -484,6 +507,8 @@ static void controlServer(int port)
         int c = accept(sfd, nullptr, nullptr);
         if (c < 0)
             continue;
+
+        std::thread([c]() {
 
         // читаем запрос целиком (заголовки + тело по Content-Length)
         std::string req;
@@ -652,6 +677,14 @@ static void controlServer(int port)
                 sendResp(c, "text/plain", std::string("error: ") + e.what() + "\n");
             }
         }
+        else if (req.compare(0, 17, "GET /preview.mjpg") == 0)
+        {
+            sendMjpegStream(c, false);
+        }
+        else if (req.compare(0, 16, "GET /source.mjpg") == 0)
+        {
+            sendMjpegStream(c, true);
+        }
         else if (req.compare(0, 16, "GET /preview.jpg") == 0)
         {
             std::string jpeg;
@@ -680,6 +713,7 @@ static void controlServer(int port)
             sendResp(c, "text/html; charset=utf-8", kPage);
         }
         close(c);
+        }).detach();
     }
 }
 #endif // MTV3_BOARD || RASPBERRY_CM5
