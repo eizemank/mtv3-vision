@@ -58,6 +58,9 @@ std::unordered_map<int, std::vector<DetectedBlob>> BlobProcessor::getOneColorBlo
     std::unordered_map<int, std::vector<DetectedBlob>> detectedOneColorBlobs;
     for (const auto& params : params_.oneColorBlobParams)
     {
+        if (!params.enabled)
+            continue;
+
         // Get mask and binarised frame
         cv::Mat mask = getMask(params, colorConverted);
 
@@ -485,6 +488,13 @@ void BlobProcessor::drawCountours(
         for (const auto& blob : blobs)
         {
             allContours.push_back(std::move(blob.contour));
+            cv::rectangle(resultFrame, blob.boundingBox, cv::Scalar(0, 255, 0), 2);
+            cv::circle(resultFrame, blob.center, 4, cv::Scalar(0, 0, 255), cv::FILLED);
+            const std::string label = "Blob " + std::to_string(patternId) +
+                " area=" + std::to_string(cvRound(blob.area));
+            cv::putText(resultFrame, label,
+                        {blob.boundingBox.x, std::max(16, blob.boundingBox.y - 5)},
+                        cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 2);
         }
     }
 
@@ -492,10 +502,20 @@ void BlobProcessor::drawCountours(
     for (const auto& multiColorBlob : multiColorBlobs)
     {
         multiColorContours.push_back(std::move(multiColorBlob.contour));
+        const cv::Rect boundingBox = cv::boundingRect(multiColorBlob.contour);
+        cv::rectangle(resultFrame, boundingBox, cv::Scalar(255, 0, 255), 3);
+        cv::putText(resultFrame, "Composite " + std::to_string(multiColorBlob.patternId),
+                    {boundingBox.x, std::max(16, boundingBox.y - 5)},
+                    cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 0, 255), 2);
     }
 
-    cv::drawContours(resultFrame, allContours, -1, cv::Scalar(255, 255, 255), 1);
+    cv::drawContours(resultFrame, allContours, -1, cv::Scalar(0, 255, 255), 2);
     cv::drawContours(resultFrame, multiColorContours, -1, cv::Scalar(0, 0, 255), 2);
+    cv::putText(resultFrame,
+                "Blobs: " + std::to_string(allContours.size()) +
+                    "  composites: " + std::to_string(multiColorContours.size()),
+                {10, 25}, cv::FONT_HERSHEY_SIMPLEX, 0.65,
+                cv::Scalar(0, 255, 255), 2);
 }
 
 std::vector<BlobMetaData> BlobProcessor::getMetaDataBlobs(const std::unordered_map<int, std::vector<DetectedBlob>>& blobsByColorPattern)
@@ -578,27 +598,27 @@ bool BlobProcessor::isBlobFit(const DetectedBlob detectedBlob, const OneColorBlo
 
 bool BlobProcessor::isAreaOk(double area, double minArea, double maxArea)
 {
-    return (area > minArea && area < maxArea);
+    return (area >= minArea && area <= maxArea);
 }
 
 bool BlobProcessor::isCircularityOk(double circularity, double minCircularity, double maxCircularity)
 {
-    return (circularity > minCircularity && circularity < maxCircularity);
+    return (circularity >= minCircularity && circularity <= maxCircularity);
 }
 
 bool BlobProcessor::isInertiaOk(double inertia, double minInertia, double maxInertia)
 {
-    return (inertia > minInertia && inertia < maxInertia);
+    return (inertia >= minInertia && inertia <= maxInertia);
 }
 
 bool BlobProcessor::isConvexityOk(double convexity, double minConvexity, double maxConvexity)
 {
-    return (convexity > minConvexity && convexity < maxConvexity);
+    return (convexity >= minConvexity && convexity <= maxConvexity);
 }
 
 bool BlobProcessor::isSizeOk(cv::Rect boundingBox, int minWidth, int minHeight)
 {
-    return (boundingBox.width > minWidth && boundingBox.height > minHeight);
+    return (boundingBox.width >= minWidth && boundingBox.height >= minHeight);
 }
 
 // TODO (DD): Need to compare results with and without morphology

@@ -3,9 +3,9 @@
 This target runs the real SeeSharp processing manager and embedded HTTP UI on
 a Linux development computer or in WSL. It does not require a camera or CM5:
 `SyntheticSource` produces two `DICT_4X4_50` ArUco markers, configured YCrCb
-color blobs, and moving person/car silhouettes at about 30 FPS. The silhouettes
-exercise the YOLO UI and pipeline, but pretrained COCO detection is not
-guaranteed for every frame because they are programmatic rather than photographs.
+color blobs, and CC0 photographic person/car test scenes at about 30 FPS. CMake
+copies the photographs to the host build directory. If those assets are absent,
+the source falls back to the original programmatic silhouettes.
 
 ## Dependencies
 
@@ -86,6 +86,13 @@ right pane shows the active detector output. Change algorithm parameters,
 select another mode, and use **Apply** to test hot reload. Modes requiring an
 external model, such as `object_detection`, need their model file in the build
 directory.
+
+In `blob_detection`, drag a rectangle around a representative blob in the
+**Source** pane, select its pattern index, and click **Configure blob from
+selected area**. The UI estimates robust YCrCb limits and initial area, width,
+and height constraints from the selected pixels. Review the generated values
+and click **Apply** or **Save**; use a tightly cropped region with little
+background for the best color estimate.
 
 To enable YOLO object detection in the host UI, install the download prerequisites
 and launch once with `--download-yolo`:

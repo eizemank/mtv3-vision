@@ -10,6 +10,7 @@
 struct OneColorBlobParams
 {
     int id;
+    bool enabled = true;
     double minArea;
     double maxArea;
     int minWidth;

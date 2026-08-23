@@ -12,6 +12,7 @@
       [
         {
           "id": 0,
+          "enabled": true,
           "min_area": 300.0,
           "max_area": 50000.0,
           "min_width": 10,
@@ -36,6 +37,7 @@
         },
         {
           "id": 1,
+          "enabled": true,
           "min_area": 300.0,
           "max_area": 50000.0,
           "min_width": 10,
@@ -60,6 +62,7 @@
         },
         {
           "id": 2,
+          "enabled": true,
           "min_area": 300.0,
           "max_area": 50000.0,
           "min_width": 10,

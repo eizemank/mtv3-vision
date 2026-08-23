@@ -96,6 +96,8 @@ endif()
 
 if(HOST_WEB_UI)
     target_compile_definitions(mainCV PRIVATE HOST_WEB_UI)
+    file(COPY ${CMAKE_SOURCE_DIR}/assets/synthetic
+         DESTINATION ${CMAKE_BINARY_DIR}/assets)
 endif()
 
 # конфиг: единый sw/common/config/config.json; локальный config/ — fallback

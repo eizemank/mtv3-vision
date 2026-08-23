@@ -80,10 +80,14 @@ static void updatePreview(const cv::Mat& source, const cv::Mat& result)
 
 static bool getPreviewJpeg(bool source, std::string& jpeg)
 {
-    std::lock_guard<std::mutex> lock(gPreviewMutex);
-    const cv::Mat& frame = source ? gPreviewSourceFrame : gPreviewResultFrame;
-    if (frame.empty())
-        return false;
+    cv::Mat frame;
+    {
+        std::lock_guard<std::mutex> lock(gPreviewMutex);
+        const cv::Mat& current = source ? gPreviewSourceFrame : gPreviewResultFrame;
+        if (current.empty())
+            return false;
+        frame = current.clone();
+    }
 
     std::vector<uchar> encoded;
     if (!cv::imencode(".jpg", frame, encoded))
@@ -133,23 +137,31 @@ button:hover{background:#464}
 button.act{background:#464;border-color:#7a7}
 textarea{width:100%;height:320px;background:#181818;color:#9e9;font-family:monospace;font-size:12px}
 img{max-width:100%;border:1px solid #444}.streams{display:grid;grid-template-columns:1fr 1fr;gap:8px}.streams h4{margin:4px}#st{margin-left:10px;color:#fb0}
+.selectFrame{position:relative;display:inline-block;max-width:100%}.selectFrame img{display:block}.selectFrame canvas{position:absolute;inset:0;width:100%;height:100%;cursor:crosshair}
+.blobSampler{display:flex;align-items:center;gap:8px;margin:6px 0 10px}.blobSampler input{width:55px;background:#222;color:#eee;border:1px solid #555;padding:4px}
 details{border:1px solid #383838;margin:6px 0;background:#161616}
 details>summary{padding:5px 8px;cursor:pointer;background:#1e1e1e;color:#cda;font-weight:bold}
 details details>summary{font-weight:normal;color:#9bd}
 .body{padding:4px 10px 8px}
 .row{display:flex;align-items:center;gap:8px;padding:2px 0}
-.row label{flex:0 0 260px;color:#bbb;font-size:13px}
+.row label{flex:0 0 260px;color:#bbb;font-size:13px;cursor:help}
 .row input[type=text],.row input[type=number]{background:#222;color:#eee;border:1px solid #555;padding:3px 6px;width:190px}
+.row input[type=color]{width:38px;height:28px;padding:1px;border:1px solid #555;background:#222;cursor:pointer}
 .row input:focus{border-color:#7a7;outline:none}
 .hint{color:#666;font-size:12px}
 </style></head><body>
 <h3>SeeSharp vision</h3>
-<div class="streams"><div><h4>Source</h4><img id="src" alt="source is not ready"></div>
+<div class="streams"><div><h4>Source</h4><div class="selectFrame"><img id="src" alt="source is not ready"><canvas id="selection"></canvas></div></div>
 <div><h4>Detection result</h4><img id="v" alt="result is not ready"></div></div><br>
+<div class="blobSampler" id="blobSampler"><span>Blob pattern index</span><input id="blobPattern" type="number" min="0" value="0">
+<button onclick="configureBlobFromSelection()">Configure blob from selected area</button>
+<span class="hint">Drag a rectangle over the source image</span></div>
 <div id="modes"></div>
 <h4>Параметры <span class="hint">(секция активного режима + общие)</span></h4>
 <div><label class="hint"><input type="checkbox" id="all" onchange="render()"> показать все секции</label>
 &nbsp;<label class="hint"><input type="checkbox" id="raw" onchange="render()"> редактировать JSON</label></div>
+<div id="paramTabs"><button id="detectorTab" class="act" onclick="setParamTab('detector')">Detector parameters</button>
+<button id="generalTab" onclick="setParamTab('general')">General parameters</button></div>
 <div id="form"></div>
 <textarea id="cfg" spellcheck="false" style="display:none"></textarea><br>
 <button onclick="send('/apply')">Применить (до перезапуска)</button>
@@ -177,17 +189,163 @@ details details>summary{font-weight:normal;color:#9bd}
 </div></details>
 <script>
 const modes=['off','aruco_detection','object_detection','blob_detection','line_detection','circle_detection'];
-setInterval(()=>{const t=Date.now();document.getElementById('src').src='/source.jpg?t='+t;
-document.getElementById('v').src='/preview.jpg?t='+t;},200);
+const imageUrls={};
+async function refreshImage(id,path){
+  try{
+    const response=await fetch(path+'?t='+Date.now(),{cache:'no-store'});
+    const type=response.headers.get('content-type')||'';
+    if(!response.ok||!type.startsWith('image/jpeg'))throw new Error('frame is not ready');
+    const blob=await response.blob(),url=URL.createObjectURL(blob),image=document.getElementById(id);
+    await new Promise((resolve,reject)=>{image.onload=resolve;image.onerror=reject;image.src=url;});
+    if(id==='src')resizeSelectionOverlay();
+    if(imageUrls[id])URL.revokeObjectURL(imageUrls[id]);
+    imageUrls[id]=url;
+  }catch(error){}
+  setTimeout(()=>refreshImage(id,path),200);
+}
+refreshImage('src','/source.jpg');
+refreshImage('v','/preview.jpg');
+const selectionCanvas=document.getElementById('selection'),selectionContext=selectionCanvas.getContext('2d');
+let selectionStart=null,selectionRect=null;
+function resizeSelectionOverlay(){
+  const image=document.getElementById('src'),rect=image.getBoundingClientRect();
+  selectionCanvas.width=Math.max(1,Math.round(rect.width));selectionCanvas.height=Math.max(1,Math.round(rect.height));drawSelection();
+}
+function selectionPoint(event){const rect=selectionCanvas.getBoundingClientRect();return{x:(event.clientX-rect.left)*selectionCanvas.width/rect.width,y:(event.clientY-rect.top)*selectionCanvas.height/rect.height};}
+function drawSelection(){selectionContext.clearRect(0,0,selectionCanvas.width,selectionCanvas.height);if(!selectionRect)return;
+  selectionContext.fillStyle='rgba(40,180,255,.18)';selectionContext.strokeStyle='#28b4ff';selectionContext.lineWidth=2;
+  selectionContext.fillRect(selectionRect.x,selectionRect.y,selectionRect.w,selectionRect.h);selectionContext.strokeRect(selectionRect.x,selectionRect.y,selectionRect.w,selectionRect.h);}
+selectionCanvas.onpointerdown=event=>{selectionStart=selectionPoint(event);selectionCanvas.setPointerCapture(event.pointerId);};
+selectionCanvas.onpointermove=event=>{if(!selectionStart)return;const point=selectionPoint(event);
+  selectionRect={x:Math.min(selectionStart.x,point.x),y:Math.min(selectionStart.y,point.y),w:Math.abs(point.x-selectionStart.x),h:Math.abs(point.y-selectionStart.y)};drawSelection();};
+selectionCanvas.onpointerup=()=>{selectionStart=null;};
+function percentile(values,fraction){values.sort((a,b)=>a-b);return values[Math.min(values.length-1,Math.floor(values.length*fraction))];}
+function configureBlobFromSelection(){
+  const currentConfig=current();if(!currentConfig)return;cfgObj=currentConfig;
+  const image=document.getElementById('src'),patterns=((cfgObj.blob_detection||{}).one_color_patterns||[]);
+  const index=Number(document.getElementById('blobPattern').value);
+  if(!selectionRect||selectionRect.w<4||selectionRect.h<4){st.textContent='Select a blob area on the source image first.';return;}
+  if(!image.naturalWidth||!image.naturalHeight){st.textContent='Source frame is not ready.';return;}
+  if(!Number.isInteger(index)||index<0||index>=patterns.length){st.textContent='Blob pattern index is out of range.';return;}
+  const scaleX=image.naturalWidth/selectionCanvas.width,scaleY=image.naturalHeight/selectionCanvas.height;
+  const roi={x:Math.max(0,Math.floor(selectionRect.x*scaleX)),y:Math.max(0,Math.floor(selectionRect.y*scaleY)),
+    w:Math.max(1,Math.floor(selectionRect.w*scaleX)),h:Math.max(1,Math.floor(selectionRect.h*scaleY))};
+  roi.w=Math.min(roi.w,image.naturalWidth-roi.x);roi.h=Math.min(roi.h,image.naturalHeight-roi.y);
+  const sample=document.createElement('canvas');sample.width=image.naturalWidth;sample.height=image.naturalHeight;
+  const context=sample.getContext('2d',{willReadFrequently:true});context.drawImage(image,0,0);
+  const pixels=context.getImageData(roi.x,roi.y,roi.w,roi.h).data,samples=[],centerSamples=[];
+  const stride=Math.max(1,Math.floor((roi.w*roi.h)/12000));
+  for(let pixel=0;pixel<roi.w*roi.h;pixel+=stride){const offset=pixel*4,r=pixels[offset],g=pixels[offset+1],b=pixels[offset+2],y=.299*r+.587*g+.114*b;
+    const sample=[y,(r-y)*.713+128,(b-y)*.564+128],x=pixel%roi.w,row=Math.floor(pixel/roi.w);samples.push(sample);
+    if(x>roi.w*.35&&x<roi.w*.65&&row>roi.h*.35&&row<roi.h*.65)centerSamples.push(sample);}
+  const trainingSamples=centerSamples.length?centerSamples:samples;
+  const center=[0,1,2].map(channel=>percentile(trainingSamples.map(sample=>sample[channel]),.5));
+  let foreground=samples.filter(sample=>Math.hypot(sample[1]-center[1],sample[2]-center[2])<=24&&Math.abs(sample[0]-center[0])<=55);
+  if(foreground.length<samples.length*.1)foreground=samples.sort((a,b)=>Math.hypot(a[0]-center[0],a[1]-center[1],a[2]-center[2])-Math.hypot(b[0]-center[0],b[1]-center[1],b[2]-center[2])).slice(0,Math.max(1,Math.floor(samples.length*.5)));
+  const channels=[0,1,2].map(channel=>foreground.map(sample=>sample[channel]));
+  const lower=channels.map(values=>clampByte(percentile(values,.05)-6));
+  const upper=channels.map(values=>clampByte(percentile(values,.95)+6));
+  const pattern=patterns[index],area=roi.w*roi.h*foreground.length/samples.length;
+  pattern.lower_range=lower;pattern.upper_range=upper;pattern.min_area=Math.max(1,Math.round(area*.45));pattern.max_area=Math.round(area*1.9);
+  pattern.min_width=Math.max(1,Math.round(roi.w*.5));pattern.min_height=Math.max(1,Math.round(roi.h*.5));
+  pattern.min_luminance=lower[0];pattern.max_luminance=upper[0];
+  pattern.min_chrominance_red=lower[1];pattern.max_chrominance_red=upper[1];
+  pattern.min_chrominance_blue=lower[2];pattern.max_chrominance_blue=upper[2];
+  st.textContent='Blob pattern '+index+' configured from '+roi.w+'×'+roi.h+' px selection. Review and Apply settings.';
+  render();
+}
 const md=document.getElementById('modes');
-let cur='', cfgObj={};
+let cur='', cfgObj={}, paramTab='detector';
 modes.forEach(m=>{const b=document.createElement('button');b.textContent=m;b.dataset.m=m;
 b.onclick=()=>fetch('/mode/'+m).then(r=>r.text()).then(t=>{st.textContent=t;load();});
 md.appendChild(b);});
-function mark(){[...md.children].forEach(b=>b.className=b.dataset.m===cur?'act':'');}
+function mark(){[...md.children].forEach(b=>b.className=b.dataset.m===cur?'act':'');document.getElementById('blobSampler').style.display=cur==='blob_detection'?'flex':'none';}
+function setParamTab(tab){
+  paramTab=tab;
+  document.getElementById('detectorTab').className=tab==='detector'?'act':'';
+  document.getElementById('generalTab').className=tab==='general'?'act':'';
+  document.getElementById('all').parentElement.style.display=tab==='detector'?'':'none';
+  render();
+}
 function el(t,c){const e=document.createElement(t);if(c)e.className=c;return e;}
+const labels={
+min_radius:'Minimum radius, px',max_radius:'Maximum radius, px',distance:'Minimum center distance, px',
+hough_param1:'Edge threshold',hough_param2:'Accumulator threshold',min_area:'Minimum area, px²',max_area:'Maximum area, px²',
+min_width:'Minimum width, px',min_height:'Minimum height, px',min_circularity:'Minimum circularity, 0–1',max_circularity:'Maximum circularity, 0–1',
+min_inertia:'Minimum inertia, 0–1',max_inertia:'Maximum inertia, 0–1',min_convexity:'Minimum convexity, 0–1',max_convexity:'Maximum convexity, 0–1',
+min_vertices:'Minimum vertices',max_vertices:'Maximum vertices',polygon_approximation:'Polygon approximation, contour fraction',
+lower_range:'Lower YCrCb range [Y, Cr, Cb]',upper_range:'Upper YCrCb range [Y, Cr, Cb]',min_luminance:'Minimum luminance Y, 0–255',max_luminance:'Maximum luminance Y, 0–255',
+min_chrominance_red:'Minimum chrominance Cr, 0–255',max_chrominance_red:'Maximum chrominance Cr, 0–255',min_chrominance_blue:'Minimum chrominance Cb, 0–255',max_chrominance_blue:'Maximum chrominance Cb, 0–255',
+enable_one_color_detection:'Enable single-color detection',enable_multicolor_detection:'Enable composite-color detection',max_composite_objects:'Maximum composite objects',
+canny_threshold1:'Canny lower threshold',canny_threshold2:'Canny upper threshold',canny_aperture_size:'Canny aperture size, px',canny_l2_gradient:'Use precise L2 gradient',
+hough_rho:'Hough distance resolution, px',hough_theta:'Hough angle resolution, rad',hough_threshold:'Hough vote threshold',hough_min_line_length:'Minimum line length, px',hough_max_line_gap:'Maximum line gap, px',
+min_angle:'Minimum angle, deg',max_angle:'Maximum angle, deg',max_lines:'Maximum detected lines',roi_x:'ROI X, frame fraction',roi_y:'ROI Y, frame fraction',roi_width:'ROI width, frame fraction',roi_height:'ROI height, frame fraction',
+dictionary:'ArUco dictionary',marker_length:'Marker side length, m',allowed_ids:'Allowed marker IDs',confidence_threshold:'Confidence threshold, 0–1',nms_threshold:'NMS IoU threshold, 0–1',max_objects:'Maximum detected objects',
+input_width:'Neural network input width, px',input_height:'Neural network input height, px',model_onnx:'ONNX model path',class_names_file:'Class names file',camera_rotation:'Camera rotation, deg',exposure_ev:'Exposure compensation, EV',
+white_balance_bgr:'White balance gains [B, G, R]',contrast:'Contrast multiplier',brightness:'Brightness offset',processing_mode:'Processing mode',debug_mode:'Enable debug mode',max_fps:'Maximum frame rate, FPS',
+jpeg_quality:'JPEG quality, 0–100',packet_size:'UDP packet size, bytes',port:'Network port',baud:'UART baud rate, bit/s',push_interval_ms:'Push interval, ms',image_size:'Training image size, px',epochs:'Training epochs',
+threshold:'Score threshold, 0–1',overall_threshold:'Overall score threshold, 0–1',weight:'Criterion weight, 0–255',goal:'Target value',angle:'Angle, deg',angle_absolute:'Absolute angle, deg',angle_relative:'Relative angle, deg',length_absolute:'Absolute length, px',length_relative:'Relative length ratio'
+};
+const hints={
+min_radius:'Smallest circle radius accepted by the detector, in pixels.',max_radius:'Largest circle radius accepted by the detector, in pixels.',distance:'Minimum distance between centers of two detected circles, in pixels.',
+hough_param1:'Upper edge threshold used internally by the Hough circle detector.',hough_param2:'Circle-center accumulator threshold. Lower values detect more circles and more false positives.',
+min_area:'Reject regions whose contour area is smaller than this value.',max_area:'Reject regions whose contour area is larger than this value.',min_width:'Minimum accepted bounding-box width.',min_height:'Minimum accepted bounding-box height.',
+min_circularity:'Minimum contour circularity: 1 is a perfect circle and 0 is highly irregular.',max_circularity:'Maximum accepted contour circularity.',min_inertia:'Minimum inertia ratio; values near 1 describe round shapes and values near 0 elongated shapes.',max_inertia:'Maximum accepted inertia ratio.',
+min_convexity:'Minimum contour area divided by convex-hull area.',max_convexity:'Maximum contour area divided by convex-hull area.',min_vertices:'Minimum number of vertices after polygon approximation; 0 disables this limit.',max_vertices:'Maximum number of vertices after polygon approximation; 0 disables this limit.',polygon_approximation:'Approximation accuracy relative to contour perimeter. Smaller values preserve more vertices.',
+lower_range:'Inclusive lower color threshold in YCrCb channel order: luminance, red chrominance, blue chrominance.',upper_range:'Inclusive upper color threshold in YCrCb channel order.',min_luminance:'Minimum accepted brightness in the Y channel.',max_luminance:'Maximum accepted brightness in the Y channel.',min_chrominance_red:'Minimum accepted Cr channel value.',max_chrominance_red:'Maximum accepted Cr channel value.',min_chrominance_blue:'Minimum accepted Cb channel value.',max_chrominance_blue:'Maximum accepted Cb channel value.',
+enable_one_color_detection:'Enables detection and reporting of individual color regions.',enable_multicolor_detection:'Enables matching of composite objects formed by linked color regions.',max_composite_objects:'Maximum number of composite objects reported in one frame.',one_color_patterns:'Definitions of individual YCrCb color patterns.',multicolor_patterns:'Definitions of composite objects and spatial links between their parts.',blob_id:'IDs of color patterns allowed for this composite-object node.',
+canny_threshold1:'Lower hysteresis threshold for the Canny edge detector.',canny_threshold2:'Upper hysteresis threshold for the Canny edge detector.',canny_aperture_size:'Sobel kernel size used by Canny; normally 3, 5, or 7.',canny_l2_gradient:'Uses the more accurate Euclidean gradient magnitude when enabled.',
+hough_rho:'Distance resolution of the Hough line accumulator.',hough_theta:'Angular resolution of the Hough line accumulator in radians.',hough_threshold:'Minimum accumulator votes required to accept a line.',hough_min_line_length:'Reject line segments shorter than this length.',hough_max_line_gap:'Maximum gap between collinear segments that may be joined.',min_angle:'Smallest accepted line orientation in degrees.',max_angle:'Largest accepted line orientation in degrees.',max_lines:'Maximum number of line segments returned per frame.',
+roi_x:'Horizontal start of the processing region, normalized to frame width from 0 to 1.',roi_y:'Vertical start of the processing region, normalized to frame height from 0 to 1.',roi_width:'Processing-region width as a fraction of frame width.',roi_height:'Processing-region height as a fraction of frame height.',
+dictionary:'Predefined ArUco dictionary used to decode markers; it must match the printed markers.',marker_length:'Physical marker side length used for pose estimation, in meters.',allowed_ids:'Optional marker ID allowlist. An empty list accepts every ID.',
+model_onnx:'Path to the YOLO ONNX model, relative to the application working directory or absolute.',class_names_file:'Text file containing one class name per line in model class order.',class_names:'Inline class-name list used when no external names are supplied.',input_width:'Width to which the neural-network input is letterboxed.',input_height:'Height to which the neural-network input is letterboxed.',confidence_threshold:'Minimum class confidence required before non-maximum suppression.',nms_threshold:'Intersection-over-union threshold used to suppress overlapping boxes.',max_objects:'Maximum number of neural-network detections returned per frame.',
+processing_mode:'Selects the active image-processing algorithm.',camera_rotation:'Clockwise rotation applied to captured frames; use 0, 90, 180, or 270 degrees.',exposure_ev:'Exposure compensation in exposure-value stops; positive values brighten the image.',white_balance_bgr:'Per-channel gain multipliers applied in blue, green, red order.',contrast:'Pixel contrast multiplier; 1 leaves contrast unchanged.',brightness:'Brightness offset added to pixel channels.',debug_mode:'Enables additional diagnostic output and debug behavior.',
+enabled:'Enables this pattern, transport, or subsystem. A disabled color pattern is ignored by single-color and composite blob detection.',host:'Destination host name or IP address.',port:'UDP or TCP destination/listening port.',jpeg_quality:'JPEG encoding quality; larger values improve quality and increase traffic.',packet_size:'Maximum UDP datagram payload size.',max_fps:'Maximum video frames transmitted each second.',device:'Linux device path used by this transport.',metadata:'Enables metadata records on this transport.',video:'Enables encoded video frames on this transport.',
+baud:'UART line speed; both ends must use the same value.',rs485:'Enables Linux RS-485 direction-control mode when supported by the UART driver.',startup_push:'Starts periodic DXL metadata transmission immediately after launch.',push_interval_ms:'Delay between automatic metadata packets.',eeprom_file:'File used to persist virtual Dynamixel EEPROM values.',
+token:'Token required by privileged web-administration endpoints.',file_root:'Filesystem root exposed by the web file manager.',terminal_enabled:'Allows execution of terminal commands through the administration API.',
+data_yaml:'YOLO dataset description containing train/validation paths and class names.',base_model:'Pretrained model used as the starting point for training.',epochs:'Number of complete passes over the training dataset.',image_size:'Square image size used during training.',output_onnx:'Output path for the exported trained ONNX model.',
+id:'Numeric identifier of this pattern, object, node, transport, or marker.',threshold:'Minimum normalized score required for this criterion.',overall_threshold:'Minimum combined score required to accept a composite object.',weight:'Relative contribution of this criterion; zero disables its contribution.',goal:'Ideal criterion value that receives the highest score.',
+size:'Size-matching criteria for a composite-object node.',size_measure:'Blob property used for relative size comparisons, such as area, width, or maximum axis.',circularity:'Circularity-matching criteria for a composite-object node.',inertia:'Inertia-ratio matching criteria for a composite-object node.',convexity:'Convexity-matching criteria for a composite-object node.',angle:'Orientation-matching criteria in degrees.',
+min:'Lowest value accepted by this criterion.',max:'Highest value accepted by this criterion.',nodes:'Primitive parts required to form this composite object.',links:'Spatial relationships required between composite-object parts.',length_absolute:'Allowed absolute distance between linked parts, in pixels.',length_relative:'Allowed distance relative to the base part size.',angle_absolute:'Allowed absolute direction between linked parts, in degrees.',angle_relative:'Allowed direction relative to the base link, in degrees.'
+};
+function fieldLabel(key){return labels[key]||key.replaceAll('_',' ').replace(/^./,c=>c.toUpperCase());}
+function fieldHint(key){return hints[key]||'Configuration parameter: '+fieldLabel(key)+'.';}
+function clampByte(v){return Math.max(0,Math.min(255,Math.round(v)));}
+function yCrCbToHex(v){
+  const y=v[0],cr=v[1]-128,cb=v[2]-128;
+  const r=clampByte(y+1.403*cr),g=clampByte(y-.714*cr-.344*cb),b=clampByte(y+1.773*cb);
+  return '#'+[r,g,b].map(x=>x.toString(16).padStart(2,'0')).join('');
+}
+function hexToYCrCb(hex){
+  const r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
+  const y=.299*r+.587*g+.114*b;
+  return [clampByte(y),clampByte((r-y)*.713+128),clampByte((b-y)*.564+128)];
+}
+function pathInput(path){
+  const encoded=JSON.stringify(path);
+  return [...document.querySelectorAll('[data-path]')].find(e=>e.dataset.path===encoded);
+}
+function addBlobColorPicker(row,path,lower){
+  if(path.length<4||path[0]!=='blob_detection'||path[1]!=='one_color_patterns'||path[path.length-1]!=='lower_range')return;
+  const upperPath=path.slice(); upperPath[upperPath.length-1]='upper_range';
+  const configuredUpper=cfgObj.blob_detection.one_color_patterns[path[2]].upper_range;
+  const center=lower.map((value,index)=>(value+configuredUpper[index])/2);
+  const caption=el('span','hint'); caption.textContent='Color'; row.appendChild(caption);
+  const picker=el('input'); picker.type='color'; picker.value=yCrCbToHex(center);
+  picker.title='Select the target blob color. The current YCrCb tolerance width is preserved.';
+  picker.oninput=()=>{
+    const lowerInput=pathInput(path),upperInput=pathInput(upperPath);
+    if(!lowerInput||!upperInput)return;
+    const low=lowerInput.value.split(',').map(Number),high=upperInput.value.split(',').map(Number);
+    const half=[0,1,2].map(index=>Math.max(1,(high[index]-low[index])/2));
+    const selected=hexToYCrCb(picker.value);
+    lowerInput.value=selected.map((value,index)=>clampByte(value-half[index])).join(', ');
+    upperInput.value=selected.map((value,index)=>clampByte(value+half[index])).join(', ');
+  };
+  row.appendChild(picker);
+}
 function fieldRow(key,val,path){
-  const r=el('div','row'), l=el('label'); l.textContent=key; r.appendChild(l);
+  const r=el('div','row'), l=el('label'); l.textContent=fieldLabel(key); l.title=fieldHint(key)+' JSON key: '+key; r.appendChild(l);
   let i=el('input');
   if(typeof val==='boolean'){i.type='checkbox';i.checked=val;i.dataset.t='b';}
   else if(typeof val==='number'){i.type='number';i.value=val;i.dataset.t='n';
@@ -195,7 +353,9 @@ function fieldRow(key,val,path){
   else if(Array.isArray(val)){i.type='text';i.value=val.join(', ');i.dataset.t='a';
     i.dataset.num=val.every(x=>typeof x==='number')?'1':'0';}
   else{i.type='text';i.value=val;i.dataset.t='s';}
-  i.dataset.path=JSON.stringify(path); r.appendChild(i); return r;
+  i.title=l.title; i.dataset.path=JSON.stringify(path); r.appendChild(i);
+  if(key==='lower_range'&&Array.isArray(val))addBlobColorPicker(r,path,val);
+  return r;
 }
 function buildForm(obj,path,parent,open){
   for(const k of Object.keys(obj)){
@@ -227,7 +387,7 @@ function render(){
   if(rawMode){document.getElementById('cfg').value=JSON.stringify(cfgObj,null,2);return;}
   const showAll=document.getElementById('all').checked;
   const f=document.getElementById('form'); f.innerHTML='';
-  const sub={}; Object.keys(cfgObj).filter(k=>showAll||k===cur||k==='general_params')
+  const sub={}; Object.keys(cfgObj).filter(k=>paramTab==='general'?k==='general_params':(k!=='general_params'&&(showAll||k===cur)))
     .forEach(k=>sub[k]=cfgObj[k]);
   buildForm(sub,[],f,true);
 }
@@ -246,8 +406,14 @@ function collect(){
   });
   return o;
 }
+function normalizeConfig(config){
+  (((config||{}).blob_detection||{}).one_color_patterns||[]).forEach(pattern=>{
+    if(pattern.enabled===undefined)pattern.enabled=true;
+  });
+  return config;
+}
 function load(){fetch('/config').then(r=>r.json()).then(j=>{
-  cfgObj=j; cur=(j.general_params||{}).processing_mode||cur; mark(); render();});}
+  cfgObj=normalizeConfig(j); cur=(j.general_params||{}).processing_mode||cur; mark(); render();});}
 function current(){
   if(document.getElementById('raw').checked){
     try{return JSON.parse(document.getElementById('cfg').value);}

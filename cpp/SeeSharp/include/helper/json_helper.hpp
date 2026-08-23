@@ -46,6 +46,7 @@ inline void from_json(const nlohmann::json& j, LinkSettings& p)
 inline void from_json(const nlohmann::json& j, OneColorBlobParams& p)
 {
     j.at("id").get_to(p.id);
+    p.enabled = j.value("enabled", true);
     j.at("min_area").get_to(p.minArea);
     j.at("max_area").get_to(p.maxArea);
     j.at("min_width").get_to(p.minWidth);

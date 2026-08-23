@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <string>
@@ -76,6 +77,19 @@ private:
 
     static void drawYoloObjects(cv::Mat& frame, int offset)
     {
+        static const cv::Mat personPhoto =
+            loadSyntheticPhoto("person.jpg");
+        static const cv::Mat carPhoto =
+            loadSyntheticPhoto("car.jpg");
+        const bool photosReady = pastePhoto(frame, personPhoto, {15, 210, 295, 215}) &&
+                                 pastePhoto(frame, carPhoto, {330, 210, 295, 215});
+        if (photosReady)
+        {
+            cv::putText(frame, "YOLO: real CC0 person + car photos", {165, 447},
+                        cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(20, 20, 20), 1);
+            return;
+        }
+
         const cv::Point person(170 + offset, 285);
         cv::circle(frame, {person.x, person.y - 55}, 20,
                    cv::Scalar(45, 45, 45), cv::FILLED);
@@ -100,6 +114,34 @@ private:
         cv::circle(frame, {carX + 150, 380}, 20, cv::Scalar(25, 25, 25), cv::FILLED);
         cv::putText(frame, "YOLO: person + car", {260, 430},
                     cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(20, 20, 20), 1);
+    }
+
+    static bool pastePhoto(cv::Mat& frame, const cv::Mat& photo,
+                           const cv::Rect& destination)
+    {
+        if (photo.empty())
+            return false;
+        const double scale = std::max(
+            static_cast<double>(destination.width) / photo.cols,
+            static_cast<double>(destination.height) / photo.rows);
+        cv::Mat resized;
+        cv::resize(photo, resized, {}, scale, scale, cv::INTER_AREA);
+        const int cropX = std::max(0, (resized.cols - destination.width) / 2);
+        const int cropY = std::max(0, (resized.rows - destination.height) / 2);
+        resized(cv::Rect(cropX, cropY, destination.width, destination.height))
+            .copyTo(frame(destination));
+        cv::rectangle(frame, destination, cv::Scalar(255, 255, 255), 2);
+        return true;
+    }
+
+    static cv::Mat loadSyntheticPhoto(const std::string& filename)
+    {
+        cv::Mat photo = cv::imread("assets/synthetic/" + filename,
+                                   cv::IMREAD_COLOR);
+        if (photo.empty())
+            photo = cv::imread("cpp/SeeSharp/assets/synthetic/" + filename,
+                               cv::IMREAD_COLOR);
+        return photo;
     }
 
     bool opened_ = true;
