@@ -15,6 +15,7 @@ BlobMetaData convertDetectedBlobToMetaData(const DetectedBlob& detectedBlob)
     info.id = detectedBlob.colorPatternId;
     info.center = detectedBlob.center;
     info.area = detectedBlob.area;
+    info.circularity = detectedBlob.circularity;
     info.boundingBox = detectedBlob.boundingBox;
     return info;
 }
@@ -504,9 +505,67 @@ void BlobProcessor::drawCountours(
         multiColorContours.push_back(std::move(multiColorBlob.contour));
         const cv::Rect boundingBox = cv::boundingRect(multiColorBlob.contour);
         cv::rectangle(resultFrame, boundingBox, cv::Scalar(255, 0, 255), 3);
-        cv::putText(resultFrame, "Composite " + std::to_string(multiColorBlob.patternId),
+        std::string compositeLabel = "Composite " +
+            std::to_string(multiColorBlob.patternId) + " [";
+        for (size_t index = 0; index < multiColorBlob.nodeCandidates.size(); ++index)
+        {
+            if (index > 0)
+                compositeLabel += '-';
+            compositeLabel += "B" + std::to_string(
+                multiColorBlob.nodeCandidates[index].detectedBlob.colorPatternId);
+        }
+        compositeLabel += ']';
+        cv::putText(resultFrame, compositeLabel,
                     {boundingBox.x, std::max(16, boundingBox.y - 5)},
                     cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 0, 255), 2);
+
+        for (const auto& node : multiColorBlob.nodeCandidates)
+        {
+            const cv::Point center(cvRound(node.detectedBlob.center.x),
+                                   cvRound(node.detectedBlob.center.y));
+            cv::putText(resultFrame, "N" + std::to_string(node.nodeId),
+                        center + cv::Point(7, -7), cv::FONT_HERSHEY_SIMPLEX,
+                        0.5, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
+        }
+
+        for (const auto& link : multiColorBlob.linkCandidates)
+        {
+            const std::string linkId = link.id ? link.id : "";
+            const size_t separator = linkId.find('-');
+            if (separator == std::string::npos)
+                continue;
+
+            const int firstNodeId = std::stoi(linkId.substr(0, separator));
+            const int secondNodeId = std::stoi(linkId.substr(separator + 1));
+            const auto firstNode = std::find_if(
+                multiColorBlob.nodeCandidates.begin(), multiColorBlob.nodeCandidates.end(),
+                [firstNodeId](const NodeCandidate& node) { return node.nodeId == firstNodeId; });
+            const auto secondNode = std::find_if(
+                multiColorBlob.nodeCandidates.begin(), multiColorBlob.nodeCandidates.end(),
+                [secondNodeId](const NodeCandidate& node) { return node.nodeId == secondNodeId; });
+            if (firstNode == multiColorBlob.nodeCandidates.end() ||
+                secondNode == multiColorBlob.nodeCandidates.end())
+                continue;
+
+            const cv::Point firstCenter(cvRound(firstNode->detectedBlob.center.x),
+                                        cvRound(firstNode->detectedBlob.center.y));
+            const cv::Point secondCenter(cvRound(secondNode->detectedBlob.center.x),
+                                         cvRound(secondNode->detectedBlob.center.y));
+            const cv::Scalar linkColor = linkId == "0-1"
+                ? cv::Scalar(0, 165, 255)
+                : cv::Scalar(255, 255, 0);
+            cv::line(resultFrame, firstCenter, secondCenter, linkColor, 2, cv::LINE_AA);
+            cv::circle(resultFrame, firstCenter, 5, linkColor, cv::FILLED, cv::LINE_AA);
+            cv::circle(resultFrame, secondCenter, 5, linkColor, cv::FILLED, cv::LINE_AA);
+
+            const cv::Point labelPosition(
+                (firstCenter.x + secondCenter.x) / 2,
+                (firstCenter.y + secondCenter.y) / 2);
+            cv::putText(resultFrame,
+                        linkId + "  " + std::to_string(cvRound(link.length)) + "px",
+                        labelPosition, cv::FONT_HERSHEY_SIMPLEX, 0.45,
+                        linkColor, 2, cv::LINE_AA);
+        }
     }
 
     cv::drawContours(resultFrame, allContours, -1, cv::Scalar(0, 255, 255), 2);
@@ -545,6 +604,7 @@ std::vector<BlobMetaData> BlobProcessor::getCompositeMetaData(
         item.center = {boundingBox.x + boundingBox.width * 0.5f,
                        boundingBox.y + boundingBox.height * 0.5f};
         item.area = cv::contourArea(composite.contour);
+        item.circularity = 0.0;
         item.boundingBox = boundingBox;
         metadata.push_back(item);
     }

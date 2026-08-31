@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <thread>
@@ -23,7 +24,7 @@ public:
         const int offset = static_cast<int>((frameNumber_ * 3) % 100) - 50;
         drawAruco(frame, 7, {20, 75}, 105);
         drawAruco(frame, 23, {515, 75}, 105);
-        drawBlobs(frame);
+        drawBlobs(frame, frameNumber_);
         drawYoloObjects(frame, offset);
         cv::putText(frame, "SeeSharp synthetic detector scene", {105, 35},
                     cv::FONT_HERSHEY_SIMPLEX, 0.75, cv::Scalar(30, 30, 30), 2);
@@ -60,19 +61,42 @@ private:
                     cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(20, 20, 20), 1);
     }
 
-    static void drawBlobs(cv::Mat& frame)
+    static void drawBlobs(cv::Mat& frame, uint64_t frameNumber)
     {
-        const cv::Scalar redPattern(110, 100, 220);
-        const cv::Scalar greenPattern(150, 180, 100);
-        const cv::Scalar bluePattern(220, 100, 80);
-        cv::circle(frame, {175, 115}, 28, redPattern, cv::FILLED);
-        cv::circle(frame, {235, 115}, 28, greenPattern, cv::FILLED);
-        cv::circle(frame, {295, 115}, 28, bluePattern, cv::FILLED);
-        cv::rectangle(frame, {335, 88, 55, 55}, redPattern, cv::FILLED);
-        const std::vector<cv::Point> triangle{{425, 87}, {395, 143}, {455, 143}};
-        cv::fillConvexPoly(frame, triangle, bluePattern);
-        cv::putText(frame, "BLOBS", {260, 175}, cv::FONT_HERSHEY_SIMPLEX,
-                    0.5, cv::Scalar(20, 20, 20), 1);
+        static const std::vector<cv::Scalar> colors{
+            {110, 100, 220}, {150, 180, 100}, {220, 100, 80},
+            {0, 255, 0}, {255, 255, 0}};
+        static const std::vector<cv::Point2f> layout{
+            {40.0f, 0.0f}, {-20.0f, 60.0f}, {-20.0f, 10.0f},
+            {80.0f, 55.0f}, {120.0f, 5.0f}};
+
+        const double phase = static_cast<double>(frameNumber) * 0.045;
+        const cv::Point2f origin(
+            300.0f + static_cast<float>(55.0 * std::sin(phase)),
+            78.0f + static_cast<float>(12.0 * std::sin(phase * 1.7)));
+        const float scale = 1.0f + static_cast<float>(0.08 * std::sin(phase * 1.3));
+        const int radius = 20 + cvRound(2.0 * std::sin(phase * 2.1));
+
+        std::vector<cv::Point> centers;
+        centers.reserve(layout.size());
+        for (const auto& offset : layout)
+        {
+            const cv::Point2f position = origin + offset * scale;
+            centers.emplace_back(cvRound(position.x), cvRound(position.y));
+        }
+
+        for (size_t index = 0; index < layout.size(); ++index)
+        {
+            const cv::Point center = centers[index];
+            cv::circle(frame, center, radius, colors[index], cv::FILLED,
+                       cv::LINE_AA);
+            cv::putText(frame, "B" + std::to_string(index),
+                        center + cv::Point(-10, -radius - 5), cv::FONT_HERSHEY_SIMPLEX,
+                        0.4, cv::Scalar(30, 30, 30), 1, cv::LINE_AA);
+        }
+
+        cv::putText(frame, "MOVING LINKED BLOBS", {245, 190},
+                    cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(20, 20, 20), 1);
     }
 
     static void drawYoloObjects(cv::Mat& frame, int offset)

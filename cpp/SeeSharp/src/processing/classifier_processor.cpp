@@ -131,6 +131,7 @@ std::pair<cv::Mat, std::vector<BlobMetaData>> ClassifierProcessor::process(cv::M
         meta.id = best;
         meta.center = { frame.cols / 2.0f, frame.rows / 2.0f };
         meta.area = score;               // score в поле area (0..1)
+        meta.confidence = score;
         meta.boundingBox = { 0, 0, frame.cols, frame.rows };
         metadata.push_back(meta);
     }

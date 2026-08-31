@@ -16,6 +16,8 @@
 #include <nlohmann/json.hpp>
 #include <opencv2/imgcodecs.hpp>
 
+#include "transport/metadata_json.hpp"
+
 namespace
 {
 constexpr size_t kHeaderSize = 16;
@@ -129,37 +131,7 @@ bool UsbStreamTransport::writeRecord(uint8_t messageType, uint32_t frameId,
 
 std::string UsbStreamTransport::serializeMetadata(const VisionFrame& frame) const
 {
-    nlohmann::json objects = nlohmann::json::array();
-    const size_t count = std::min(frame.objects.size(), kMaxMetadataObjects);
-    const float width = std::max(1, static_cast<int>(frame.imageWidth));
-    const float height = std::max(1, static_cast<int>(frame.imageHeight));
-    for (size_t index = 0; index < count; ++index)
-    {
-        const BlobMetaData& object = frame.objects[index];
-        objects.push_back({
-            {"class_id", object.id},
-            {"confidence", (frame.detectorType == ProcessingType::Classification ||
-                             frame.detectorType == ProcessingType::ObjectDetection)
-                                   ? object.area : 1.0},
-            {"center", {object.center.x / width, object.center.y / height}},
-            {"bbox", {
-                {"x", (object.boundingBox.x + object.boundingBox.width * 0.5) / width},
-                {"y", (object.boundingBox.y + object.boundingBox.height * 0.5) / height},
-                {"w", object.boundingBox.width / width},
-                {"h", object.boundingBox.height / height}
-            }},
-            {"area", object.area}
-        });
-    }
-    return nlohmann::json({
-        {"version", "1.0"}, {"msg_type", "detection_frame"},
-        {"frame_id", frame.frameId}, {"timestamp_ms", frame.timestampMs},
-        {"image_size", {frame.imageWidth, frame.imageHeight}},
-        {"detector", detectorTypeName(frame.detectorType)},
-        {"inference_ms", frame.inferenceUs / 1000.0}, {"fps", frame.fps},
-        {"truncated", frame.objects.size() > count},
-        {"detections", std::move(objects)}
-    }).dump();
+    return serializeVisionFrameJson(frame, kMaxMetadataObjects).dump();
 }
 
 void UsbStreamTransport::run()

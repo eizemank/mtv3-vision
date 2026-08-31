@@ -12,26 +12,21 @@ The `transports` section in `config.json` controls metadata outputs:
 "transports": {
   "udp_metadata": {
     "enabled": true,
+    "format": "json",
     "host": "192.168.1.50",
     "port": 5000
   },
-  "uart_dxl": {
+  "uart_binary": {
     "enabled": true,
     "device": "/dev/serial0",
     "baud": 115200,
-    "id": 100,
-    "rs485": false,
-    "startup_push": true,
-    "push_interval_ms": 33,
-    "eeprom_file": "dxl_eeprom.bin"
+    "max_objects": 20
   }
 }
 ```
 
-`startup_push` starts autonomous status packets only after the first processed
-frame has populated the Control Table. This supports the 12-second power-on to
-first-detection-packet requirement. Disable it on a shared bus unless the bus
-master provides a collision-free transmission window.
+`uart_binary` sends each processed detection frame automatically. The worker
+keeps only the latest pending frame, so a slow UART does not block processing.
 
 Restart `mainCV` after changing this section. Detector parameters and mode can
 still be reloaded while the process is running.
@@ -55,9 +50,10 @@ allows any client to select its own refresh rate.
 
 ## UDP metadata
 
-One UTF-8 JSON datagram is emitted for every processed frame. Coordinates in
-`center` and `bbox` are normalized to `0.0..1.0`; `area` remains in processor
-units for backward compatibility.
+The implementation selects the JSON variant of the full UDP/Ethernet protocol
+with `format: "json"`. One UTF-8 JSON datagram is emitted for every processed
+frame. Neural-network `bbox` coordinates are normalized to `0.0..1.0`.
+Primitive coordinates use pixels, as defined by the common data model.
 
 ```json
 {
@@ -66,18 +62,23 @@ units for backward compatibility.
   "frame_id": 123,
   "timestamp_ms": 456789,
   "image_size": [640, 480],
-  "detector": "aruco",
-  "inference_ms": 2.1,
+  "detector": "object_detection",
+  "inference_ms": 24.5,
   "fps": 30.0,
   "detections": [
     {
-      "class_id": 42,
-      "confidence": 1.0,
-      "center": [0.5, 0.5],
+      "id": 0,
+      "class_id": 2,
+      "class_name": "class_2",
+      "confidence": 0.87,
       "bbox": {"x": 0.5, "y": 0.5, "w": 0.2, "h": 0.2},
-      "area": 12000.0
+      "timestamp_ms": 456789
     }
-  ]
+  ],
+  "aruco_markers": [],
+  "lines": [],
+  "circles": [],
+  "blobs": []
 }
 ```
 
@@ -88,9 +89,8 @@ nc -u -l 5000
 ```
 
 UDP is non-blocking. Lost datagrams are not retransmitted; `frame_id` lets the
-receiver detect loss. Use UART polling when deterministic request/response is
-required. A datagram contains at most 200 detections; `truncated: true` marks
-frames that exceeded this safety limit.
+receiver detect loss. A datagram contains at most 200 result records. The same
+full JSON data model is used for USB metadata records.
 
 ## UDP video
 
@@ -139,7 +139,30 @@ Example receiver (requires `python3-opencv` and `python3-numpy`):
 python3 board/raspberry-cm5/udp_video_receiver.py 5001
 ```
 
-## UART Dynamixel Protocol 1.0
+## UART lightweight binary protocol
+
+Frame format:
+
+| Field | Size | Description |
+|---|---:|---|
+| SYNC | 2 | `AA 55` |
+| LEN | 2 | Payload length, `uint16` little-endian |
+| MSG_ID | 1 | Message type |
+| PAYLOAD | LEN | Binary message data |
+| CRC16 | 2 | CRC-16/CCITT over `MSG_ID + PAYLOAD`, little-endian |
+| END | 1 | `55` |
+
+Detection IDs are `0x02` NN, `0x03` ArUco, `0x04` Blob, `0x05` Line and
+`0x06` Circle. The detection payload starts with a 14-byte header:
+`frame_id:u32`, `timestamp_ms:u32`, `width:u16`, `height:u16`,
+`num_objects:u8`, `reserved:u8`. Each object occupies 14 bytes:
+`class_id:u8`, `confidence:u8`, center X/Y, width/height, object ID and
+reserved (`uint16` little-endian fields).
+
+`max_objects` is clamped to 1–20. Supported baud rates are 9600, 19200,
+38400, 57600, 115200 and, where available, 230400 bit/s.
+
+## UART Dynamixel Protocol 1.0 (legacy)
 
 The implementation follows the agreed CM5 virtual-device protocol:
 

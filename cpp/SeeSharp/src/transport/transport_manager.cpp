@@ -3,6 +3,7 @@
 #include <iostream>
 
 #include "transport/dxl_uart_transport.hpp"
+#include "transport/binary_uart_transport.hpp"
 #include "transport/udp_metadata_transport.hpp"
 #include "transport/udp_video_transport.hpp"
 #include "transport/usb_stream_transport.hpp"
@@ -14,7 +15,8 @@ TransportManager::TransportManager(const nlohmann::json& config,
         "transports", nlohmann::json::object());
     const nlohmann::json udp = transports.value(
         "udp_metadata", nlohmann::json::object());
-    if (udp.value("enabled", false))
+    const std::string udpFormat = udp.value("format", "json");
+    if (udp.value("enabled", false) && udpFormat == "json")
     {
         udp_ = std::make_unique<UdpMetadataTransport>(
             udp.value("host", "127.0.0.1"),
@@ -25,6 +27,11 @@ TransportManager::TransportManager(const nlohmann::json& config,
                       << std::endl;
             udp_.reset();
         }
+    }
+    else if (udp.value("enabled", false))
+    {
+        std::cerr << "UDP metadata transport is disabled: unsupported format "
+                  << udpFormat << " (supported: json)" << std::endl;
     }
 
     const nlohmann::json usb = transports.value(
@@ -71,6 +78,18 @@ TransportManager::TransportManager(const nlohmann::json& config,
         if (!uart_->isOpen())
             uart_.reset();
     }
+
+    const nlohmann::json binaryUart = transports.value(
+        "uart_binary", nlohmann::json::object());
+    if (binaryUart.value("enabled", false))
+    {
+        binaryUart_ = std::make_unique<BinaryUartTransport>(
+            binaryUart.value("device", "/dev/serial0"),
+            binaryUart.value("baud", 115200),
+            static_cast<size_t>(binaryUart.value("max_objects", 20)));
+        if (!binaryUart_->isOpen())
+            binaryUart_.reset();
+    }
 }
 
 TransportManager::~TransportManager() = default;
@@ -79,6 +98,8 @@ void TransportManager::publish(const VisionFrame& frame, const cv::Mat& image)
 {
     if (uart_)
         uart_->publish(frame);
+    if (binaryUart_)
+        binaryUart_->publish(frame);
     if (udp_)
         udp_->publish(frame);
     if (video_)

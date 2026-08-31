@@ -41,6 +41,7 @@ std::pair<cv::Mat, std::vector<BlobMetaData>> CircleProcessor::process(cv::Mat& 
         meta.area = 3.141592653589793 * radius * radius;
         meta.boundingBox = cv::Rect(center.x - radius, center.y - radius,
                                     radius * 2, radius * 2);
+        meta.radius = radius;
         metadata.push_back(meta);
     }
 

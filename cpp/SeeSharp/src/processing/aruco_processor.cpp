@@ -73,6 +73,7 @@ std::pair<cv::Mat, std::vector<BlobMetaData>> ArucoProcessor::process(cv::Mat& f
             if (meta.area < params_.minArea || meta.area > params_.maxArea)
                 continue;
             meta.boundingBox = cv::boundingRect(ipts);
+            meta.points = pts;
             metadata.push_back(meta);
         }
     }

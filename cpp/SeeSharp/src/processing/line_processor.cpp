@@ -47,6 +47,7 @@ std::pair<cv::Mat, std::vector<BlobMetaData>> LineProcessor::process(cv::Mat& fr
         meta.center = cv::Point2f((pt1.x + pt2.x) / 2.0f, (pt1.y + pt2.y) / 2.0f);
         meta.area = cv::norm(pt1 - pt2);
         meta.boundingBox = cv::boundingRect(std::vector<cv::Point>{pt1, pt2});
+        meta.points = {pt1, pt2};
 
         metadata.push_back(meta);
     }

@@ -136,6 +136,7 @@ body{font-family:sans-serif;background:#111;color:#eee;margin:12px;max-width:110
 button{margin:2px;padding:6px 12px;background:#333;color:#eee;border:1px solid #555;cursor:pointer}
 button:hover{background:#464}
 button.act{background:#464;border-color:#7a7}
+button.selecting{background:#075b75;border-color:#28b4ff}
 textarea{width:100%;height:320px;background:#181818;color:#9e9;font-family:monospace;font-size:12px}
 img{max-width:100%;border:1px solid #444}.streams{display:grid;grid-template-columns:1fr 1fr;gap:8px}.streams h4{margin:4px}#st{margin-left:10px;color:#fb0}
 .selectFrame{position:relative;display:inline-block;max-width:100%}.selectFrame img{display:block}.selectFrame canvas{position:absolute;inset:0;width:100%;height:100%;cursor:crosshair}
@@ -150,25 +151,31 @@ details details>summary{font-weight:normal;color:#9bd}
 .row input[type=color]{width:38px;height:28px;padding:1px;border:1px solid #555;background:#222;cursor:pointer}
 .row input:focus{border-color:#7a7;outline:none}
 .hint{color:#666;font-size:12px}
+.linkedEditor{border:1px solid #475847;background:#141a14;padding:10px;margin:8px 0}
+.linkedEditor h4{margin:4px 0 8px;color:#bdb}.linkedGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:6px}
+.linkedCard,.linkedRow{border:1px solid #384838;background:#1a211a;padding:7px}.linkedCard select,.linkedRow select{background:#222;color:#eee;border:1px solid #555;padding:4px}
+.linkedRow{display:flex;align-items:center;gap:6px;margin-top:5px}.linkedRow span{color:#9bd}.danger{color:#fbb;border-color:#744}
+.swatch{display:inline-block;width:16px;height:16px;border:1px solid #888;vertical-align:middle;margin-right:5px}
 </style></head><body>
-<h3>SeeSharp vision</h3>
-<div class="streams"><div><h4>Source</h4><div class="selectFrame"><img id="src" alt="source is not ready"><canvas id="selection"></canvas></div></div>
-<div><h4>Detection result</h4><img id="v" alt="result is not ready"></div></div><br>
-<div class="blobSampler" id="blobSampler"><span>Blob pattern index</span><input id="blobPattern" type="number" min="0" value="0">
-<button onclick="configureBlobFromSelection()">Configure blob from selected area</button>
-<span class="hint">Drag a rectangle over the source image</span></div>
+<h3 id="appTitle">SeeSharp vision</h3><label><span id="languageLabel">Language</span> <select id="language" onchange="setLanguage(this.value)"><option value="ru">Русский</option><option value="en">English</option></select></label>
+<div class="streams"><div><h4 id="sourceTitle">Source</h4><div class="selectFrame"><img id="src" alt="source is not ready"><canvas id="selection"></canvas></div></div>
+<div><h4 id="resultTitle">Detection result</h4><img id="v" alt="result is not ready"></div></div><br>
+<div class="blobSampler" id="blobSampler"><span id="blobPatternLabel">Blob pattern index</span><input id="blobPattern" type="number" min="0" value="0">
+<button id="configureBlobButton" onclick="configureBlobFromSelection()">Configure blob from selected area</button>
+<span class="hint" id="blobSelectionHint">Drag a rectangle over the source image</span></div>
 <div id="modes"></div>
-<h4>Параметры <span class="hint">(секция активного режима + общие)</span></h4>
-<div><label class="hint"><input type="checkbox" id="all" onchange="render()"> показать все секции</label>
-&nbsp;<label class="hint"><input type="checkbox" id="raw" onchange="render()"> редактировать JSON</label></div>
+<h4><span id="parametersTitle">Параметры</span> <span class="hint" id="parametersHint">(секция активного режима + общие)</span></h4>
+<div><label class="hint"><input type="checkbox" id="all" onchange="render()"> <span id="showAllLabel">показать все секции</span></label>
+&nbsp;<label class="hint"><input type="checkbox" id="raw" onchange="render()"> <span id="rawLabel">редактировать JSON</span></label></div>
 <div id="paramTabs"><button id="detectorTab" class="act" onclick="setParamTab('detector')">Detector parameters</button>
-<button id="generalTab" onclick="setParamTab('general')">General parameters</button></div>
+<button id="generalTab" onclick="setParamTab('general')">General parameters</button>
+<button id="uartTab" onclick="setParamTab('uart')">UART metadata</button></div>
 <div id="form"></div>
 <textarea id="cfg" spellcheck="false" style="display:none"></textarea><br>
-<button onclick="send('/apply')">Применить (до перезапуска)</button>
-<button onclick="send('/config')">Сохранить (постоянно)</button>
-<button onclick="revert()">Откатить к сохранённому</button><span id="st"></span>
-<details><summary>CM5 system administration</summary><div class="body">
+<button id="applyButton" onclick="send('/apply')">Применить (до перезапуска)</button>
+<button id="saveButton" onclick="send('/config')">Сохранить (постоянно)</button>
+<button id="revertButton" onclick="revert()">Откатить к сохранённому</button><span id="st"></span>
+<details><summary id="adminTitle">CM5 system administration</summary><div class="body">
 <div class="row"><label>Admin token</label><input id="admToken" type="password"></div>
 <button onclick="adminGet('status')">System status</button>
 <button onclick="adminGet('processes')">Processes</button>
@@ -190,6 +197,23 @@ details details>summary{font-weight:normal;color:#9bd}
 </div></details>
 <script>
 const modes=['off','aruco_detection','object_detection','blob_detection','line_detection','circle_detection'];
+let language='ru';
+const uiText={
+  ru:{language:'Язык',source:'Исходное видео',result:'Результат детекции',blobPattern:'Номер цветового шаблона',configureBlob:'Настроить blob по выделенной области',selectHint:'Выделите прямоугольник на исходном видео',parameters:'Параметры',parametersHint:'(активный алгоритм и общие настройки)',showAll:'показать все разделы',raw:'редактировать JSON',detectorTab:'Параметры детектора',generalTab:'Общие параметры',uartTab:'Метаданные UART',apply:'Применить',save:'Сохранить',revert:'Откатить',linkedEditor:'Редактор связанного объекта',components:'Количество blobs в связанном объекте',selectVideo:'Выбрать на видео',remove:'Удалить',drawLink:'Провести связь на видео',manualLink:'Добавить связь вручную',base:'базовый',baseLink:'Базовая связь',admin:'Системное администрирование CM5'},
+  en:{language:'Language',source:'Source video',result:'Detection result',blobPattern:'Blob pattern index',configureBlob:'Configure blob from selected area',selectHint:'Drag a rectangle over the source image',parameters:'Parameters',parametersHint:'(active detector and general settings)',showAll:'show all sections',raw:'edit JSON',detectorTab:'Detector parameters',generalTab:'General parameters',uartTab:'UART metadata',apply:'Apply',save:'Save',revert:'Revert',linkedEditor:'Linked blob object editor',components:'Number of blobs in linked object',selectVideo:'Select on video',remove:'Remove',drawLink:'Draw link on video',manualLink:'Add link manually',base:'base',baseLink:'Base link',admin:'CM5 system administration'}
+};
+const modeNames={ru:{off:'Выключено',aruco_detection:'ArUco-маркеры',object_detection:'Объекты YOLO',blob_detection:'Цветовые blobs',line_detection:'Линии',circle_detection:'Окружности'},en:{off:'Off',aruco_detection:'ArUco detection',object_detection:'Object detection',blob_detection:'Blob detection',line_detection:'Line detection',circle_detection:'Circle detection'}};
+function tr(key){return (uiText[language]||uiText.en)[key]||key;}
+function applyLocalization(){
+  const values={languageLabel:tr('language'),sourceTitle:tr('source'),resultTitle:tr('result'),blobPatternLabel:tr('blobPattern'),configureBlobButton:tr('configureBlob'),blobSelectionHint:tr('selectHint'),parametersTitle:tr('parameters'),parametersHint:tr('parametersHint'),showAllLabel:tr('showAll'),rawLabel:tr('raw'),detectorTab:tr('detectorTab'),generalTab:tr('generalTab'),uartTab:tr('uartTab'),applyButton:tr('apply'),saveButton:tr('save'),revertButton:tr('revert'),adminTitle:tr('admin')};
+  Object.entries(values).forEach(([id,value])=>{const element=document.getElementById(id);if(element)element.textContent=value;});
+  document.getElementById('language').value=language;
+  [...document.getElementById('modes').children].forEach(button=>button.textContent=(modeNames[language]||modeNames.en)[button.dataset.m]||button.dataset.m);
+}
+function setLanguage(value){
+  if(Object.keys(cfgObj).length)cfgObj=collect();language=value==='en'?'en':'ru';
+  cfgObj.general_params=cfgObj.general_params||{};cfgObj.general_params.ui_language=language;applyLocalization();render();
+}
 function startVideoStream(id,path){
   const image=document.getElementById(id);
   image.onload=()=>{if(id==='src')resizeSelectionOverlay();};
@@ -199,19 +223,28 @@ function startVideoStream(id,path){
 startVideoStream('src','/source.mjpg');
 startVideoStream('v','/preview.mjpg');
 const selectionCanvas=document.getElementById('selection'),selectionContext=selectionCanvas.getContext('2d');
-let selectionStart=null,selectionRect=null;
+let selectionStart=null,selectionRect=null,linkedAction=null,linkPreview=null;
+const linkedPoints={};
 function resizeSelectionOverlay(){
   const image=document.getElementById('src'),rect=image.getBoundingClientRect();
   selectionCanvas.width=Math.max(1,Math.round(rect.width));selectionCanvas.height=Math.max(1,Math.round(rect.height));drawSelection();
 }
 function selectionPoint(event){const rect=selectionCanvas.getBoundingClientRect();return{x:(event.clientX-rect.left)*selectionCanvas.width/rect.width,y:(event.clientY-rect.top)*selectionCanvas.height/rect.height};}
-function drawSelection(){selectionContext.clearRect(0,0,selectionCanvas.width,selectionCanvas.height);if(!selectionRect)return;
-  selectionContext.fillStyle='rgba(40,180,255,.18)';selectionContext.strokeStyle='#28b4ff';selectionContext.lineWidth=2;
-  selectionContext.fillRect(selectionRect.x,selectionRect.y,selectionRect.w,selectionRect.h);selectionContext.strokeRect(selectionRect.x,selectionRect.y,selectionRect.w,selectionRect.h);}
-selectionCanvas.onpointerdown=event=>{selectionStart=selectionPoint(event);selectionCanvas.setPointerCapture(event.pointerId);};
+function drawSelection(){selectionContext.clearRect(0,0,selectionCanvas.width,selectionCanvas.height);
+  Object.entries(linkedPoints).forEach(([patternIndex,points])=>{const pattern=(((cfgObj||{}).blob_detection||{}).multicolor_patterns||[])[Number(patternIndex)];if(!pattern)return;
+    (pattern.links||[]).forEach(link=>{const ids=link.id.split('-').map(Number),a=points[ids[0]],b=points[ids[1]];if(!a||!b)return;
+      selectionContext.strokeStyle=link.id==='0-1'?'#ffa500':'#00ffff';selectionContext.lineWidth=3;selectionContext.beginPath();selectionContext.moveTo(a.x*selectionCanvas.width,a.y*selectionCanvas.height);selectionContext.lineTo(b.x*selectionCanvas.width,b.y*selectionCanvas.height);selectionContext.stroke();});
+    Object.entries(points).forEach(([nodeId,point])=>{const x=point.x*selectionCanvas.width,y=point.y*selectionCanvas.height;selectionContext.fillStyle='#fff';selectionContext.beginPath();selectionContext.arc(x,y,7,0,Math.PI*2);selectionContext.fill();selectionContext.fillStyle='#111';selectionContext.font='11px sans-serif';selectionContext.fillText('N'+nodeId,x-6,y+4);});});
+  if(linkPreview){selectionContext.strokeStyle='#28b4ff';selectionContext.lineWidth=3;selectionContext.setLineDash([7,5]);selectionContext.beginPath();selectionContext.moveTo(linkPreview.a.x,linkPreview.a.y);selectionContext.lineTo(linkPreview.b.x,linkPreview.b.y);selectionContext.stroke();selectionContext.setLineDash([]);}
+  if(selectionRect){selectionContext.fillStyle='rgba(40,180,255,.18)';selectionContext.strokeStyle='#28b4ff';selectionContext.lineWidth=2;
+    selectionContext.fillRect(selectionRect.x,selectionRect.y,selectionRect.w,selectionRect.h);selectionContext.strokeRect(selectionRect.x,selectionRect.y,selectionRect.w,selectionRect.h);}}
+selectionCanvas.onpointerdown=event=>{selectionStart=selectionPoint(event);selectionCanvas.setPointerCapture(event.pointerId);if(linkedAction&&linkedAction.type==='link')linkPreview={a:selectionStart,b:selectionStart};};
 selectionCanvas.onpointermove=event=>{if(!selectionStart)return;const point=selectionPoint(event);
-  selectionRect={x:Math.min(selectionStart.x,point.x),y:Math.min(selectionStart.y,point.y),w:Math.abs(point.x-selectionStart.x),h:Math.abs(point.y-selectionStart.y)};drawSelection();};
-selectionCanvas.onpointerup=()=>{selectionStart=null;};
+  if(linkedAction&&linkedAction.type==='link')linkPreview={a:selectionStart,b:point};
+  else selectionRect={x:Math.min(selectionStart.x,point.x),y:Math.min(selectionStart.y,point.y),w:Math.abs(point.x-selectionStart.x),h:Math.abs(point.y-selectionStart.y)};drawSelection();};
+selectionCanvas.onpointerup=event=>{const end=selectionPoint(event),start=selectionStart;selectionStart=null;
+  if(linkedAction&&linkedAction.type==='link'){finishLinkedLine(start,end);linkPreview=null;drawSelection();return;}
+  if(linkedAction&&linkedAction.type==='part')assignLinkedPartFromSelection(linkedAction.patternIndex,linkedAction.nodeIndex);};
 function percentile(values,fraction){values.sort((a,b)=>a-b);return values[Math.min(values.length-1,Math.floor(values.length*fraction))];}
 function configureBlobFromSelection(){
   const currentConfig=current();if(!currentConfig)return;cfgObj=currentConfig;
@@ -249,7 +282,7 @@ function configureBlobFromSelection(){
 }
 const md=document.getElementById('modes');
 let cur='', cfgObj={}, paramTab='detector';
-modes.forEach(m=>{const b=document.createElement('button');b.textContent=m;b.dataset.m=m;
+modes.forEach(m=>{const b=document.createElement('button');b.textContent=(modeNames[language]||modeNames.en)[m]||m;b.dataset.m=m;
 b.onclick=()=>fetch('/mode/'+m).then(r=>r.text()).then(t=>{st.textContent=t;load();});
 md.appendChild(b);});
 function mark(){[...md.children].forEach(b=>b.className=b.dataset.m===cur?'act':'');document.getElementById('blobSampler').style.display=cur==='blob_detection'?'flex':'none';}
@@ -257,6 +290,7 @@ function setParamTab(tab){
   paramTab=tab;
   document.getElementById('detectorTab').className=tab==='detector'?'act':'';
   document.getElementById('generalTab').className=tab==='general'?'act':'';
+  document.getElementById('uartTab').className=tab==='uart'?'act':'';
   document.getElementById('all').parentElement.style.display=tab==='detector'?'':'none';
   render();
 }
@@ -277,6 +311,7 @@ dictionary:'ArUco dictionary',marker_length:'Marker side length, m',allowed_ids:
 input_width:'Neural network input width, px',input_height:'Neural network input height, px',model_onnx:'ONNX model path',class_names_file:'Class names file',camera_rotation:'Camera rotation, deg',exposure_ev:'Exposure compensation, EV',
 white_balance_bgr:'White balance gains [B, G, R]',contrast:'Contrast multiplier',brightness:'Brightness offset',processing_mode:'Processing mode',debug_mode:'Enable debug mode',max_fps:'Maximum frame rate, FPS',
 jpeg_quality:'JPEG quality, 0–100',packet_size:'UDP packet size, bytes',port:'Network port',baud:'UART baud rate, bit/s',push_interval_ms:'Push interval, ms',image_size:'Training image size, px',epochs:'Training epochs',
+device:'UART device',rs485:'Use RS-485 direction control',startup_push:'Send metadata automatically',eeprom_file:'DXL EEPROM state file',
 threshold:'Score threshold, 0–1',overall_threshold:'Overall score threshold, 0–1',weight:'Criterion weight, 0–255',goal:'Target value',angle:'Angle, deg',angle_absolute:'Absolute angle, deg',angle_relative:'Relative angle, deg',length_absolute:'Absolute length, px',length_relative:'Relative length ratio'
 };
 const hints={
@@ -294,15 +329,21 @@ dictionary:'Predefined ArUco dictionary used to decode markers; it must match th
 model_onnx:'Path to the YOLO ONNX model, relative to the application working directory or absolute.',class_names_file:'Text file containing one class name per line in model class order.',class_names:'Inline class-name list used when no external names are supplied.',input_width:'Width to which the neural-network input is letterboxed.',input_height:'Height to which the neural-network input is letterboxed.',confidence_threshold:'Minimum class confidence required before non-maximum suppression.',nms_threshold:'Intersection-over-union threshold used to suppress overlapping boxes.',max_objects:'Maximum number of neural-network detections returned per frame.',
 processing_mode:'Selects the active image-processing algorithm.',camera_rotation:'Clockwise rotation applied to captured frames; use 0, 90, 180, or 270 degrees.',exposure_ev:'Exposure compensation in exposure-value stops; positive values brighten the image.',white_balance_bgr:'Per-channel gain multipliers applied in blue, green, red order.',contrast:'Pixel contrast multiplier; 1 leaves contrast unchanged.',brightness:'Brightness offset added to pixel channels.',debug_mode:'Enables additional diagnostic output and debug behavior.',
 enabled:'Enables this pattern, transport, or subsystem. A disabled color pattern is ignored by single-color and composite blob detection.',host:'Destination host name or IP address.',port:'UDP or TCP destination/listening port.',jpeg_quality:'JPEG encoding quality; larger values improve quality and increase traffic.',packet_size:'Maximum UDP datagram payload size.',max_fps:'Maximum video frames transmitted each second.',device:'Linux device path used by this transport.',metadata:'Enables metadata records on this transport.',video:'Enables encoded video frames on this transport.',
-baud:'UART line speed; both ends must use the same value.',rs485:'Enables Linux RS-485 direction-control mode when supported by the UART driver.',startup_push:'Starts periodic DXL metadata transmission immediately after launch.',push_interval_ms:'Delay between automatic metadata packets.',eeprom_file:'File used to persist virtual Dynamixel EEPROM values.',
+baud:'UART line speed; both ends must use the same value.',uart_binary:'Lightweight binary UART transport used to send detection metadata.',
 token:'Token required by privileged web-administration endpoints.',file_root:'Filesystem root exposed by the web file manager.',terminal_enabled:'Allows execution of terminal commands through the administration API.',
 data_yaml:'YOLO dataset description containing train/validation paths and class names.',base_model:'Pretrained model used as the starting point for training.',epochs:'Number of complete passes over the training dataset.',image_size:'Square image size used during training.',output_onnx:'Output path for the exported trained ONNX model.',
 id:'Numeric identifier of this pattern, object, node, transport, or marker.',threshold:'Minimum normalized score required for this criterion.',overall_threshold:'Minimum combined score required to accept a composite object.',weight:'Relative contribution of this criterion; zero disables its contribution.',goal:'Ideal criterion value that receives the highest score.',
 size:'Size-matching criteria for a composite-object node.',size_measure:'Blob property used for relative size comparisons, such as area, width, or maximum axis.',circularity:'Circularity-matching criteria for a composite-object node.',inertia:'Inertia-ratio matching criteria for a composite-object node.',convexity:'Convexity-matching criteria for a composite-object node.',angle:'Orientation-matching criteria in degrees.',
 min:'Lowest value accepted by this criterion.',max:'Highest value accepted by this criterion.',nodes:'Primitive parts required to form this composite object.',links:'Spatial relationships required between composite-object parts.',length_absolute:'Allowed absolute distance between linked parts, in pixels.',length_relative:'Allowed distance relative to the base part size.',angle_absolute:'Allowed absolute direction between linked parts, in degrees.',angle_relative:'Allowed direction relative to the base link, in degrees.'
 };
-function fieldLabel(key){return labels[key]||key.replaceAll('_',' ').replace(/^./,c=>c.toUpperCase());}
-function fieldHint(key){return hints[key]||'Configuration parameter: '+fieldLabel(key)+'.';}
+const ruLabels={
+enabled:'Включено',device:'Устройство',baud:'Скорость UART, бит/с',format:'Формат',host:'Адрес получателя',port:'Порт',max_objects:'Максимум объектов',blob_detection:'Детекция blobs',aruco_detection:'Детекция ArUco',object_detection:'Детекция объектов',line_detection:'Детекция линий',circle_detection:'Детекция окружностей',general_params:'Общие параметры',transports:'Транспортные протоколы',uart_binary:'Бинарный UART',processing_mode:'Режим обработки',ui_language:'Язык интерфейса',debug_mode:'Отладочный режим',camera_rotation:'Поворот камеры, градусы',exposure_ev:'Экспозиция, EV',white_balance_bgr:'Баланс белого [B, G, R]',contrast:'Контрастность',brightness:'Яркость',enable_one_color_detection:'Детекция отдельных цветовых областей',enable_multicolor_detection:'Детекция связанных объектов',max_composite_objects:'Максимум связанных объектов',one_color_patterns:'Цветовые шаблоны',multicolor_patterns:'Шаблоны связанных объектов',min_area:'Минимальная площадь, пикс²',max_area:'Максимальная площадь, пикс²',min_width:'Минимальная ширина, пикс',min_height:'Минимальная высота, пикс',lower_range:'Нижняя граница YCrCb [Y, Cr, Cb]',upper_range:'Верхняя граница YCrCb [Y, Cr, Cb]',min_circularity:'Минимальная округлость',max_circularity:'Максимальная округлость',min_inertia:'Минимальная инерция',max_inertia:'Максимальная инерция',min_convexity:'Минимальная выпуклость',max_convexity:'Максимальная выпуклость',min_vertices:'Минимум вершин',max_vertices:'Максимум вершин',polygon_approximation:'Аппроксимация контура',dictionary:'Словарь ArUco',marker_length:'Размер маркера, м',allowed_ids:'Разрешённые ID',model_onnx:'Файл модели ONNX',class_names_file:'Файл названий классов',input_width:'Ширина входа, пикс',input_height:'Высота входа, пикс',confidence_threshold:'Порог уверенности',nms_threshold:'Порог NMS IoU',min_radius:'Минимальный радиус, пикс',max_radius:'Максимальный радиус, пикс',distance:'Минимальное расстояние центров, пикс',min_angle:'Минимальный угол, градусы',max_angle:'Максимальный угол, градусы',max_lines:'Максимум линий',threshold:'Порог',overall_threshold:'Общий порог',weight:'Вес',goal:'Целевое значение',size:'Размер',size_measure:'Способ измерения размера',nodes:'Компоненты',links:'Связи',length_absolute:'Абсолютная длина',length_relative:'Относительная длина',angle_absolute:'Абсолютный угол',angle_relative:'Относительный угол'};
+function fieldLabel(key){return language==='ru'?(ruLabels[key]||labels[key]||key.replaceAll('_',' ')):(labels[key]||key.replaceAll('_',' ').replace(/^./,c=>c.toUpperCase()));}
+function fieldHint(key){return language==='ru'?('Настройка «'+fieldLabel(key)+'».'):(hints[key]||'Configuration parameter: '+fieldLabel(key)+'.');}
+function contextualFieldLabel(key,path){
+  if(path[0]==='transports'&&path[1]==='uart_binary')return({enabled:'Enable UART metadata',max_objects:'Maximum objects per packet'}[key]||fieldLabel(key));
+  return fieldLabel(key);
+}
 function clampByte(v){return Math.max(0,Math.min(255,Math.round(v)));}
 function yCrCbToHex(v){
   const y=v[0],cr=v[1]-128,cb=v[2]-128;
@@ -338,7 +379,7 @@ function addBlobColorPicker(row,path,lower){
   row.appendChild(picker);
 }
 function fieldRow(key,val,path){
-  const r=el('div','row'), l=el('label'); l.textContent=fieldLabel(key); l.title=fieldHint(key)+' JSON key: '+key; r.appendChild(l);
+  const r=el('div','row'), l=el('label'); l.textContent=contextualFieldLabel(key,path); l.title=fieldHint(key)+' JSON key: '+key; r.appendChild(l);
   let i=el('input');
   if(typeof val==='boolean'){i.type='checkbox';i.checked=val;i.dataset.t='b';}
   else if(typeof val==='number'){i.type='number';i.value=val;i.dataset.t='n';
@@ -350,6 +391,95 @@ function fieldRow(key,val,path){
   if(key==='lower_range'&&Array.isArray(val))addBlobColorPicker(r,path,val);
   return r;
 }
+function linkedDefaults(){return{
+  node:id=>({id,blob_id:[id],threshold:.06,weight:255,size:{min:0,max:5000,goal:350,weight:255},circularity:{min:0,max:1,goal:.5,weight:0},inertia:{min:0,max:1,goal:.5,weight:0},convexity:{min:0,max:1,goal:.5,weight:0},angle:{min:-180,max:180,goal:0,weight:0}}),
+  link:(a,b)=>({id:a+'-'+b,threshold:0,weight:255,length_absolute:{min:0,max:100000,goal:350,weight:0},length_relative:{min:0,max:10000,goal:.5,weight:0},angle_absolute:{min:-180,max:180,goal:0,weight:0},angle_relative:{min:-180,max:180,goal:0,weight:0}})
+};}
+function syncLinkedEdit(change){cfgObj=collect();change(cfgObj.blob_detection);render();}
+function setLinkedNodeCount(patternIndex,value){syncLinkedEdit(blob=>{
+  const pattern=blob.multicolor_patterns[patternIndex],count=Math.max(2,Math.min(5,Number(value)||2)),colors=blob.one_color_patterns||[];
+  while(pattern.nodes.length<count){const id=pattern.nodes.length,node=linkedDefaults().node(id);if(colors.length)node.blob_id=[colors[Math.min(id,colors.length-1)].id];pattern.nodes.push(node);}
+  if(pattern.nodes.length>count)pattern.nodes.length=count;
+  pattern.nodes.forEach((node,index)=>node.id=index);pattern.links=pattern.links.filter(link=>link.id.split('-').every(id=>Number(id)<count));
+  if(count>=2&&!pattern.links.some(link=>link.id==='0-1'))pattern.links.unshift(linkedDefaults().link(0,1));
+  const points=linkedPoints[patternIndex]||{};Object.keys(points).forEach(id=>{if(Number(id)>=count)delete points[id];});
+});}
+function startLinkedPartSelection(patternIndex,nodeIndex){
+  cfgObj=collect();linkedAction={type:'part',patternIndex,nodeIndex};selectionRect=null;linkPreview=null;st.textContent='Drag a rectangle around the object for component N'+nodeIndex+'.';render();
+}
+function assignLinkedPartFromSelection(patternIndex,nodeIndex){
+  if(!selectionRect||selectionRect.w<4||selectionRect.h<4){st.textContent='Draw a rectangle around the component first.';return;}
+  cfgObj=collect();const node=cfgObj.blob_detection.multicolor_patterns[patternIndex].nodes[nodeIndex],colorId=(node.blob_id||[])[0];
+  document.getElementById('blobPattern').value=colorId;linkedPoints[patternIndex]=linkedPoints[patternIndex]||{};
+  linkedPoints[patternIndex][nodeIndex]={x:(selectionRect.x+selectionRect.w/2)/selectionCanvas.width,y:(selectionRect.y+selectionRect.h/2)/selectionCanvas.height};
+  linkedAction=null;configureBlobFromSelection();selectionRect=null;st.textContent='Component N'+nodeIndex+' assigned to blob pattern '+colorId+'.';drawSelection();
+}
+function startLinkedLine(patternIndex){
+  cfgObj=collect();const points=linkedPoints[patternIndex]||{};if(Object.keys(points).length<2){st.textContent='Assign at least two components on the video first.';return;}
+  linkedAction={type:'link',patternIndex};selectionRect=null;st.textContent='Draw a line from one assigned component to another.';render();
+}
+function nearestLinkedNode(patternIndex,point){let result=null,best=45;const points=linkedPoints[patternIndex]||{};
+  Object.entries(points).forEach(([id,p])=>{const distance=Math.hypot(point.x-p.x*selectionCanvas.width,point.y-p.y*selectionCanvas.height);if(distance<best){best=distance;result=Number(id);}});return result;}
+function finishLinkedLine(start,end){
+  const patternIndex=linkedAction.patternIndex,first=nearestLinkedNode(patternIndex,start),second=nearestLinkedNode(patternIndex,end);linkedAction=null;
+  if(first===null||second===null){st.textContent='Start and finish the line on assigned component markers.';render();return;}
+  if(first===second){st.textContent='A component cannot be linked to itself.';render();return;}
+  cfgObj=collect();const pattern=cfgObj.blob_detection.multicolor_patterns[patternIndex],a=Math.min(first,second),b=Math.max(first,second),id=a+'-'+b,points=linkedPoints[patternIndex];
+  let link=pattern.links.find(item=>item.id===id);if(!link){link=linkedDefaults().link(a,b);pattern.links.push(link);}
+  const image=document.getElementById('src'),dx=(points[b].x-points[a].x)*image.naturalWidth,dy=(points[b].y-points[a].y)*image.naturalHeight;
+  const length=Math.hypot(dx,dy),angle=(Math.atan2(dy,dx)*180/Math.PI+180)%180;
+  link.length_absolute={min:Math.max(0,length*.75),max:length*1.25,goal:length,weight:255};
+  link.angle_absolute={min:Math.max(0,angle-15),max:Math.min(180,angle+15),goal:angle,weight:255};link.threshold=.7;
+  if(id==='0-1'){pattern.links=pattern.links.filter(item=>item!==link);pattern.links.unshift(link);}
+  st.textContent='Link '+id+' configured: '+Math.round(length)+' px, '+Math.round(angle)+'°.';render();
+}
+function addLinkedNode(patternIndex){syncLinkedEdit(blob=>{
+  const pattern=blob.multicolor_patterns[patternIndex];
+  if(pattern.nodes.length>=5){st.textContent='A linked object may contain at most 5 blobs.';return;}
+  const id=pattern.nodes.length,colors=blob.one_color_patterns||[];
+  pattern.nodes.push(linkedDefaults().node(id));
+  if(colors.length)pattern.nodes[id].blob_id=[colors[Math.min(id,colors.length-1)].id];
+});}
+function removeLinkedNode(patternIndex,nodeIndex){syncLinkedEdit(blob=>{
+  const pattern=blob.multicolor_patterns[patternIndex];
+  if(pattern.nodes.length<=2){st.textContent='A linked object must contain at least two blobs.';return;}
+  pattern.nodes.splice(nodeIndex,1);pattern.nodes.forEach((node,index)=>node.id=index);
+  pattern.links=pattern.links.map(link=>{const ids=link.id.split('-').map(Number);if(ids.includes(nodeIndex))return null;
+    link.id=(ids[0]-(ids[0]>nodeIndex?1:0))+'-'+(ids[1]-(ids[1]>nodeIndex?1:0));return link;}).filter(Boolean);
+});}
+function addLinkedRelation(patternIndex){syncLinkedEdit(blob=>{
+  const pattern=blob.multicolor_patterns[patternIndex];if(pattern.nodes.length<2)return;
+  for(let a=0;a<pattern.nodes.length;a++)for(let b=a+1;b<pattern.nodes.length;b++)if(!pattern.links.some(link=>link.id===a+'-'+b)){pattern.links.push(linkedDefaults().link(a,b));return;}
+  st.textContent='All component pairs are already linked.';
+});}
+function updateLinkedRelation(patternIndex,linkIndex,side,value){syncLinkedEdit(blob=>{
+  const link=blob.multicolor_patterns[patternIndex].links[linkIndex],ids=link.id.split('-').map(Number);ids[side]=Number(value);
+  if(ids[0]===ids[1]){st.textContent='A component cannot be linked to itself.';return;}link.id=ids.join('-');
+});}
+function renderLinkedBlobEditor(parent){
+  const blob=cfgObj.blob_detection;if(!blob)return;
+  const editor=el('div','linkedEditor'),title=el('h4');title.textContent=tr('linkedEditor');editor.appendChild(title);
+  (blob.multicolor_patterns||[]).forEach((pattern,patternIndex)=>{
+    const section=el('details');section.open=true;const summary=el('summary');summary.textContent=(language==='ru'?'Составной объект ':'Composite object ')+pattern.id+' — '+pattern.nodes.length+(language==='ru'?' блобов, ':' blobs, ')+pattern.links.length+(language==='ru'?' связей':' links');section.appendChild(summary);
+    const body=el('div','body'),countRow=el('div','row'),countLabel=el('label');countLabel.textContent=tr('components');countRow.appendChild(countLabel);
+    const count=el('input');count.type='number';count.min='2';count.max='5';count.value=pattern.nodes.length;count.onchange=()=>setLinkedNodeCount(patternIndex,count.value);countRow.appendChild(count);body.appendChild(countRow);
+    const guide=el('div','hint');guide.textContent=language==='ru'?'1. Задайте число компонентов. 2. Выберите каждый компонент на исходном видео. 3. Проведите связи между назначенными маркерами.':'1. Set component count. 2. Select each component on the source video. 3. Draw links between assigned markers.';body.appendChild(guide);
+    const grid=el('div','linkedGrid');
+    pattern.nodes.forEach((node,nodeIndex)=>{const card=el('div','linkedCard'),caption=el('div');caption.textContent=(language==='ru'?'Компонент ':'Component ')+nodeIndex+(nodeIndex===0?(language==='ru'?' (базовый)':' (base)'):'');card.appendChild(caption);
+      const select=el('select');(blob.one_color_patterns||[]).forEach(color=>{const option=el('option');option.value=color.id;option.textContent=(language==='ru'?'Шаблон блоба ':'Blob pattern ')+color.id+(color.enabled===false?(language==='ru'?' (отключён)':' (disabled)'):'');option.selected=(node.blob_id||[]).includes(color.id);select.appendChild(option);});
+      select.title=language==='ru'?'Назначьте шаблон цвета или блоба для этого компонента.':'Assign the detected color/blob pattern used by this component.';select.onchange=()=>syncLinkedEdit(b=>b.multicolor_patterns[patternIndex].nodes[nodeIndex].blob_id=[Number(select.value)]);card.appendChild(select);
+      const pick=el('button',linkedAction&&linkedAction.type==='part'&&linkedAction.patternIndex===patternIndex&&linkedAction.nodeIndex===nodeIndex?'selecting':'');pick.textContent=tr('selectVideo');pick.onclick=()=>startLinkedPartSelection(patternIndex,nodeIndex);card.appendChild(pick);
+      const remove=el('button','danger');remove.textContent=tr('remove');remove.disabled=pattern.nodes.length<=2||nodeIndex<2;remove.title=nodeIndex<2?(language==='ru'?'Компоненты 0 и 1 задают базовую связь.':'Components 0 and 1 define the base link.'):(language==='ru'?'Удалить компонент и его связи.':'Remove this component and its links.');remove.onclick=()=>removeLinkedNode(patternIndex,nodeIndex);card.appendChild(remove);grid.appendChild(card);});
+    body.appendChild(grid);const addNode=el('button');addNode.textContent=language==='ru'?'+ Добавить компонент':'+ Add component';addNode.disabled=pattern.nodes.length>=5;addNode.onclick=()=>addLinkedNode(patternIndex);body.appendChild(addNode);
+    const linksTitle=el('div');linksTitle.textContent=language==='ru'?'Пространственные связи':'Spatial links';linksTitle.style.marginTop='8px';body.appendChild(linksTitle);
+    pattern.links.forEach((link,linkIndex)=>{const ids=link.id.split('-').map(Number),row=el('div','linkedRow');
+      const baseLink=link.id==='0-1';
+      [0,1].forEach(side=>{const select=el('select');pattern.nodes.forEach((node,index)=>{const option=el('option');option.value=index;option.textContent=(language==='ru'?'Компонент ':'Component ')+index;option.selected=ids[side]===index;select.appendChild(option);});select.disabled=baseLink;select.onchange=()=>updateLinkedRelation(patternIndex,linkIndex,side,select.value);row.appendChild(select);if(side===0){const arrow=el('span');arrow.textContent='↔';row.appendChild(arrow);}});
+      if(baseLink){const base=el('span','hint');base.textContent=language==='ru'?'Базовая связь':'Base link';row.appendChild(base);}const remove=el('button','danger');remove.textContent=language==='ru'?'Удалить связь':'Remove link';remove.disabled=baseLink;remove.title=baseLink?(language==='ru'?'Связь 0–1 необходима алгоритму сопоставления.':'The 0-1 base link is required by the matcher.'):'';remove.onclick=()=>syncLinkedEdit(b=>b.multicolor_patterns[patternIndex].links.splice(linkIndex,1));row.appendChild(remove);body.appendChild(row);});
+    const drawLink=el('button',linkedAction&&linkedAction.type==='link'&&linkedAction.patternIndex===patternIndex?'selecting':'');drawLink.textContent=tr('drawLink');drawLink.onclick=()=>startLinkedLine(patternIndex);body.appendChild(drawLink);
+    const addLink=el('button');addLink.textContent='+ '+tr('manualLink');addLink.onclick=()=>addLinkedRelation(patternIndex);body.appendChild(addLink);section.appendChild(body);editor.appendChild(section);
+  });parent.appendChild(editor);
+}
 function buildForm(obj,path,parent,open){
   for(const k of Object.keys(obj)){
     const v=obj[k], p=path.concat([k]);
@@ -357,7 +487,7 @@ function buildForm(obj,path,parent,open){
     const isObjArr=Array.isArray(v)&&v.some(x=>x&&typeof x==='object');
     if(isObj||isObjArr){
       const d=el('details'); if(open)d.open=true;
-      const s=el('summary'); s.textContent=k+(isObjArr?' ['+v.length+']':''); d.appendChild(s);
+      const s=el('summary'); s.textContent=fieldLabel(k)+(isObjArr?' ['+v.length+']':''); d.appendChild(s);
       const b=el('div','body'); d.appendChild(b);
       if(isObj) buildForm(v,p,b,false);
       else v.forEach((item,idx)=>{
@@ -380,9 +510,16 @@ function render(){
   if(rawMode){document.getElementById('cfg').value=JSON.stringify(cfgObj,null,2);return;}
   const showAll=document.getElementById('all').checked;
   const f=document.getElementById('form'); f.innerHTML='';
-  const sub={}; Object.keys(cfgObj).filter(k=>paramTab==='general'?k==='general_params':(k!=='general_params'&&(showAll||k===cur)))
-    .forEach(k=>sub[k]=cfgObj[k]);
+  if(paramTab==='detector'&&cur==='blob_detection'&&!showAll)renderLinkedBlobEditor(f);
+  const sub={};
+  if(paramTab==='general')sub.general_params=cfgObj.general_params;
+  else if(paramTab==='uart'){
+    const info=el('div','linkedEditor');info.textContent=language==='ru'?'Облегчённый бинарный UART: AA 55 | длина данных (uint16 LE) | ID сообщения | данные | CRC-16/CCITT | 55. Пакеты детекции отправляются автоматически после обработки каждого кадра.':'Lightweight binary UART: AA 55 | payload length (uint16 LE) | message ID | payload | CRC-16/CCITT | 55. Detection packets are sent automatically after each processed frame.';f.appendChild(info);
+    sub.transports={uart_binary:((cfgObj.transports||{}).uart_binary||{})};
+  }
+  else Object.keys(cfgObj).filter(k=>k!=='general_params'&&(showAll||k===cur)).forEach(k=>sub[k]=cfgObj[k]);
   buildForm(sub,[],f,true);
+  drawSelection();
 }
 function collect(){
   const o=JSON.parse(JSON.stringify(cfgObj));
@@ -406,7 +543,7 @@ function normalizeConfig(config){
   return config;
 }
 function load(){fetch('/config').then(r=>r.json()).then(j=>{
-  cfgObj=normalizeConfig(j); cur=(j.general_params||{}).processing_mode||cur; mark(); render();});}
+  cfgObj=normalizeConfig(j);language=(j.general_params||{}).ui_language==='en'?'en':'ru';cur=(j.general_params||{}).processing_mode||cur;applyLocalization();mark();render();});}
 function current(){
   if(document.getElementById('raw').checked){
     try{return JSON.parse(document.getElementById('cfg').value);}

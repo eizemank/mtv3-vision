@@ -1,14 +1,12 @@
 #include "transport/udp_metadata_transport.hpp"
 
-#include <algorithm>
-#include <cmath>
 #include <utility>
 
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include <nlohmann/json.hpp>
+#include "transport/metadata_json.hpp"
 
 UdpMetadataTransport::UdpMetadataTransport(std::string host, uint16_t port)
     : port_(port)
@@ -71,44 +69,7 @@ void UdpMetadataTransport::run()
 
 void UdpMetadataTransport::sendFrame(const VisionFrame& frame)
 {
-
-    nlohmann::json detections = nlohmann::json::array();
-    constexpr size_t kMaxUdpObjects = 200;
-    const size_t objectCount = std::min(frame.objects.size(), kMaxUdpObjects);
-    for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex)
-    {
-        const BlobMetaData& object = frame.objects[objectIndex];
-        const float width = std::max(1, static_cast<int>(frame.imageWidth));
-        const float height = std::max(1, static_cast<int>(frame.imageHeight));
-        detections.push_back({
-            {"class_id", object.id},
-            {"confidence", (frame.detectorType == ProcessingType::Classification ||
-                             frame.detectorType == ProcessingType::ObjectDetection)
-                                   ? object.area : 1.0},
-            {"center", {object.center.x / width, object.center.y / height}},
-            {"bbox", {
-                {"x", (object.boundingBox.x + object.boundingBox.width * 0.5) / width},
-                {"y", (object.boundingBox.y + object.boundingBox.height * 0.5) / height},
-                {"w", object.boundingBox.width / width},
-                {"h", object.boundingBox.height / height}
-            }},
-            {"area", object.area}
-        });
-    }
-
-    nlohmann::json message = {
-        {"version", "1.0"},
-        {"msg_type", "detection_frame"},
-        {"frame_id", frame.frameId},
-        {"timestamp_ms", frame.timestampMs},
-        {"image_size", {frame.imageWidth, frame.imageHeight}},
-        {"detector", detectorTypeName(frame.detectorType)},
-        {"inference_ms", frame.inferenceUs / 1000.0},
-        {"fps", frame.fps},
-        {"truncated", frame.objects.size() > objectCount},
-        {"detections", std::move(detections)}
-    };
-    const std::string payload = message.dump();
+    const std::string payload = serializeVisionFrameJson(frame).dump();
 
     sockaddr_in destination{};
     destination.sin_family = AF_INET;

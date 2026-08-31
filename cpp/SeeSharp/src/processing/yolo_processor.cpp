@@ -115,6 +115,7 @@ std::pair<cv::Mat, std::vector<BlobMetaData>> YoloProcessor::process(cv::Mat& fr
         metadataItem.center = {box.x + box.width * 0.5f,
                                box.y + box.height * 0.5f};
         metadataItem.area = scores[index];
+        metadataItem.confidence = scores[index];
         metadataItem.boundingBox = box;
         metadata.push_back(metadataItem);
     }
