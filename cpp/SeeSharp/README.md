@@ -48,7 +48,11 @@ mkdir build-cm5 && cd build-cm5
 cmake -DRASPBERRY_CM5=ON ..
 cmake --build . -j"$(nproc)"
 ```
-CM5 uses `model_onnx` from `config.json`; `model_rknn` is ignored.
+CM5 uses `model_onnx` from `config.json`; `model_rknn` is ignored. MTV3 uses
+`model_rknn` for both frame classification and YOLO object detection. The RKNN
+YOLO model must expose one decoded prediction tensor; its orientation and
+objectness field are described by `output_layout`, `output_attributes`, and
+`output_has_objectness`.
 
 ## Getting Started
 1. Edit `config.json` (`general_params.processing_mode`) to select the module.
