@@ -482,13 +482,17 @@
     },
     "object_detection": {
       "model_onnx": "yolo11n.onnx",
+      "model_rknn": "yolo11n.rknn",
       "class_names_file": "coco.names",
       "class_names": [],
       "input_width": 640,
       "input_height": 640,
       "confidence_threshold": 0.35,
       "nms_threshold": 0.45,
-      "max_objects": 10
+      "max_objects": 10,
+      "output_layout": "channels_first",
+      "output_attributes": 84,
+      "output_has_objectness": false
     },
     "training": {
       "data_yaml": "dataset.yaml",
@@ -518,7 +522,8 @@
         "metadata": true,
         "video": true,
         "jpeg_quality": 80,
-        "max_fps": 15
+        "max_fps": 15,
+        "max_width": 960
       },
       "uart_dxl": {
         "enabled": false,
@@ -536,6 +541,12 @@
         "baud": 115200,
         "max_objects": 20
       }
+    },
+    "web_preview": {
+      "enabled": true,
+      "jpeg_quality": 75,
+      "max_fps": 15,
+      "max_width": 960
     },
     "general_params":
     {

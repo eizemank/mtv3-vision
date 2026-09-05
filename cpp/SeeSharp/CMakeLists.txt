@@ -11,6 +11,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(MTV3_BOARD "Build for MTV3 board (ShmSource + headless)" OFF)
 option(RASPBERRY_CM5 "Build for Raspberry Pi Compute Module 5 (V4L2 + headless)" OFF)
 option(HOST_WEB_UI "Build host test version with synthetic video and web UI" OFF)
+option(HOST_CAMERA_SOURCE "Use a real host camera in HOST_WEB_UI" OFF)
+
+if(HOST_CAMERA_SOURCE AND NOT HOST_WEB_UI)
+    message(FATAL_ERROR "HOST_CAMERA_SOURCE requires HOST_WEB_UI=ON")
+endif()
 
 if((MTV3_BOARD AND RASPBERRY_CM5) OR
    (MTV3_BOARD AND HOST_WEB_UI) OR
@@ -46,20 +51,28 @@ if(NOT MTV3_BOARD)
     # shm_source/rknn — только на модуле (десктоп: VideoCapture + cv::dnn)
     list(REMOVE_ITEM SRC_FILES
         ${CMAKE_SOURCE_DIR}/src/pipeline/shm_source.cpp
-        ${CMAKE_SOURCE_DIR}/src/nn/rknn_classifier.cpp)
+        ${CMAKE_SOURCE_DIR}/src/nn/rknn_classifier.cpp
+        ${CMAKE_SOURCE_DIR}/src/processing/rknn_yolo_processor.cpp)
 else()
     list(REMOVE_ITEM SRC_FILES
         ${CMAKE_SOURCE_DIR}/src/processing/yolo_processor.cpp)
 endif()
 if(NOT RASPBERRY_CM5)
     list(REMOVE_ITEM SRC_FILES
-        ${CMAKE_SOURCE_DIR}/src/system/system_admin.cpp
-        ${CMAKE_SOURCE_DIR}/src/transport/binary_uart_transport.cpp
         ${CMAKE_SOURCE_DIR}/src/transport/dxl_uart_transport.cpp
+        ${CMAKE_SOURCE_DIR}/src/transport/udp_video_transport.cpp)
+endif()
+if(NOT RASPBERRY_CM5 AND NOT MTV3_BOARD)
+    list(REMOVE_ITEM SRC_FILES
+        ${CMAKE_SOURCE_DIR}/src/system/system_admin.cpp)
+endif()
+if(NOT RASPBERRY_CM5 AND NOT MTV3_BOARD AND NOT HOST_WEB_UI)
+    list(REMOVE_ITEM SRC_FILES
+        ${CMAKE_SOURCE_DIR}/src/transport/binary_uart_transport.cpp
         ${CMAKE_SOURCE_DIR}/src/transport/transport_manager.cpp
         ${CMAKE_SOURCE_DIR}/src/transport/udp_metadata_transport.cpp
-        ${CMAKE_SOURCE_DIR}/src/transport/udp_video_transport.cpp
-        ${CMAKE_SOURCE_DIR}/src/transport/usb_stream_transport.cpp)
+        ${CMAKE_SOURCE_DIR}/src/transport/usb_stream_transport.cpp
+        ${CMAKE_SOURCE_DIR}/src/transport/websocket_metadata_transport.cpp)
 endif()
 
 add_executable(mainCV ${SRC_FILES})
@@ -100,11 +113,20 @@ if(HOST_WEB_UI)
     file(COPY ${CMAKE_SOURCE_DIR}/assets/synthetic
          DESTINATION ${CMAKE_BINARY_DIR}/assets)
 endif()
-
-# конфиг: единый sw/common/config/config.json; локальный config/ — fallback
-set(COMMON_CONFIG ${CMAKE_SOURCE_DIR}/../../common/config/config.json)
-if(EXISTS ${COMMON_CONFIG})
-    configure_file(${COMMON_CONFIG} ${CMAKE_BINARY_DIR}/config.json COPYONLY)
-else()
-    configure_file(${CMAKE_SOURCE_DIR}/config/config.json ${CMAKE_BINARY_DIR}/config.json COPYONLY)
+if(HOST_CAMERA_SOURCE)
+    target_compile_definitions(mainCV PRIVATE HOST_CAMERA_SOURCE)
 endif()
+
+# Конфиг можно переопределить абсолютным путём через -DSEESHARP_CONFIG_FILE=...
+set(SEESHARP_CONFIG_FILE "" CACHE FILEPATH "Initial SeeSharp config.json")
+if(SEESHARP_CONFIG_FILE)
+    set(DEFAULT_CONFIG ${SEESHARP_CONFIG_FILE})
+elseif(MTV3_BOARD)
+    set(DEFAULT_CONFIG ${CMAKE_SOURCE_DIR}/../../common/config/config/config.json)
+else()
+    set(DEFAULT_CONFIG ${CMAKE_SOURCE_DIR}/../../common/config/config.json)
+endif()
+if(NOT EXISTS ${DEFAULT_CONFIG})
+    set(DEFAULT_CONFIG ${CMAKE_SOURCE_DIR}/config/config.json)
+endif()
+configure_file(${DEFAULT_CONFIG} ${CMAKE_BINARY_DIR}/config.json COPYONLY)

@@ -15,8 +15,24 @@
 class CameraSource : public IFrameSource
 {
 public:
-    explicit CameraSource(int device = 0, int backend = cv::CAP_V4L2)
-        : device_(device), backend_(backend), cap_(device, backend) {}
+    explicit CameraSource(int device = 0, int backend = cv::CAP_V4L2,
+                          int width = 0, int height = 0, int requestedFps = 0,
+                          bool useMjpeg = false)
+        : device_(device), backend_(backend), cap_(device, backend)
+    {
+        if (!cap_.isOpened())
+            return;
+        if (useMjpeg)
+            cap_.set(cv::CAP_PROP_FOURCC,
+                     cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
+        if (width > 0)
+            cap_.set(cv::CAP_PROP_FRAME_WIDTH, width);
+        if (height > 0)
+            cap_.set(cv::CAP_PROP_FRAME_HEIGHT, height);
+        if (requestedFps > 0)
+            cap_.set(cv::CAP_PROP_FPS, requestedFps);
+        cap_.set(cv::CAP_PROP_BUFFERSIZE, 1);
+    }
 
     bool read(cv::Mat& frame) override
     {

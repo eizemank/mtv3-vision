@@ -41,33 +41,41 @@ public:
     /// @brief Process a frame and return the processed frame along with metadata
     std::pair<cv::Mat, std::vector<BlobMetaData>> processFrame(cv::Mat& frame)
     {
-        std::lock_guard<std::mutex> lock(m_);
-        if (cameraRotation_ == 90)
+        std::shared_ptr<IFrameProcessor> processor;
+        int cameraRotation;
+        GeneralParams generalParams;
+        {
+            std::lock_guard<std::mutex> lock(m_);
+            processor = frameProcessor_;
+            cameraRotation = cameraRotation_;
+            generalParams = generalParams_;
+        }
+        if (cameraRotation == 90)
             cv::rotate(frame, frame, cv::ROTATE_90_CLOCKWISE);
-        else if (cameraRotation_ == 180)
+        else if (cameraRotation == 180)
             cv::rotate(frame, frame, cv::ROTATE_180);
-        else if (cameraRotation_ == 270)
+        else if (cameraRotation == 270)
             cv::rotate(frame, frame, cv::ROTATE_90_COUNTERCLOCKWISE);
-        if (generalParams_.exposureEv != 0.0 || generalParams_.contrast != 1.0 ||
-            generalParams_.brightness != 0.0 ||
-            generalParams_.whiteBalanceBlue != 1.0 ||
-            generalParams_.whiteBalanceGreen != 1.0 ||
-            generalParams_.whiteBalanceRed != 1.0)
+        if (generalParams.exposureEv != 0.0 || generalParams.contrast != 1.0 ||
+            generalParams.brightness != 0.0 ||
+            generalParams.whiteBalanceBlue != 1.0 ||
+            generalParams.whiteBalanceGreen != 1.0 ||
+            generalParams.whiteBalanceRed != 1.0)
         {
             cv::Mat corrected;
             frame.convertTo(corrected, CV_32FC3);
             std::vector<cv::Mat> channels;
             cv::split(corrected, channels);
-            channels[0] *= generalParams_.whiteBalanceBlue;
-            channels[1] *= generalParams_.whiteBalanceGreen;
-            channels[2] *= generalParams_.whiteBalanceRed;
+            channels[0] *= generalParams.whiteBalanceBlue;
+            channels[1] *= generalParams.whiteBalanceGreen;
+            channels[2] *= generalParams.whiteBalanceRed;
             cv::merge(channels, corrected);
-            const double exposureScale = std::pow(2.0, generalParams_.exposureEv);
+            const double exposureScale = std::pow(2.0, generalParams.exposureEv);
             corrected.convertTo(frame, CV_8UC3,
-                                exposureScale * generalParams_.contrast,
-                                generalParams_.brightness);
+                                exposureScale * generalParams.contrast,
+                                generalParams.brightness);
         }
-        return frameProcessor_->process(frame);
+        return processor->process(frame);
     }
 
     ProcessingType processingType()
@@ -77,7 +85,7 @@ public:
     }
 
 private:
-    std::unique_ptr<IFrameProcessor> frameProcessor_;
+    std::shared_ptr<IFrameProcessor> frameProcessor_;
     ProcessingType processingType_ = ProcessingType::BlobDetection;
     int cameraRotation_ = 0;
     GeneralParams generalParams_{false, ProcessingType::BlobDetection};

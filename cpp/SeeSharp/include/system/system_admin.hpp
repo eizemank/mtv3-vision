@@ -10,6 +10,7 @@ public:
     explicit SystemAdmin(const nlohmann::json& config);
 
     bool authorized(const std::string& request) const;
+    bool permitsConfiguration(const nlohmann::json& config) const;
     nlohmann::json status() const;
     nlohmann::json processes() const;
     nlohmann::json network() const;
@@ -24,6 +25,7 @@ public:
 private:
     std::string token_;
     std::string fileRoot_;
+    std::string networkHelper_;
     bool terminalEnabled_ = false;
 
     std::string resolvePath(const std::string& relativePath) const;

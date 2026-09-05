@@ -2,6 +2,7 @@
     "system_admin": {
       "token": "",
       "file_root": "/opt/seesharp",
+      "network_helper": "/usr/bin/mtv3_network.sh",
       "terminal_enabled": false
     },
     "blob_detection": {
@@ -440,6 +441,19 @@
       "dictionary": "DICT_4X4_50",
       "marker_length": 0.05
     },
+    "object_detection": {
+      "model_onnx": "yolo11n.onnx",
+      "model_rknn": "/opt/seesharp/yolo11n.rknn",
+      "class_names_file": "/opt/seesharp/coco.names",
+      "input_width": 640,
+      "input_height": 640,
+      "confidence_threshold": 0.35,
+      "nms_threshold": 0.45,
+      "max_objects": 10,
+      "output_layout": "channels_first",
+      "output_attributes": 84,
+      "output_has_objectness": false
+    },
     "classification": {
       "model_onnx": "simple_classifier.onnx",
       "model_rknn": "simple_classifier.rknn",
@@ -448,12 +462,33 @@
       "class_names": ["background", "target"]
     },
     "transports": {
+      "udp_metadata": {
+        "enabled": false,
+        "format": "json",
+        "host": "192.168.1.2",
+        "port": 5000
+      },
       "uart_binary": {
-        "enabled": true,
-        "device": "/dev/serial0",
+        "enabled": false,
+        "device": "/dev/ttyS1",
         "baud": 115200,
         "max_objects": 20
+      },
+      "usb_stream": {
+        "enabled": true,
+        "device": "/dev/ttyGS0",
+        "metadata": true,
+        "video": true,
+        "jpeg_quality": 60,
+        "max_fps": 5,
+        "max_width": 640
       }
+    },
+    "web_preview": {
+      "enabled": true,
+      "jpeg_quality": 65,
+      "max_fps": 8,
+      "max_width": 640
     },
     "general_params":
     {

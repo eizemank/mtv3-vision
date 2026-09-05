@@ -22,8 +22,10 @@
 #include "pipeline/pipeline.hpp"
 #include "processing/processing_manager.hpp"
 
-#ifdef RASPBERRY_CM5
+#if defined(MTV3_BOARD) || defined(RASPBERRY_CM5)
 #include "system/system_admin.hpp"
+#endif
+#if defined(MTV3_BOARD) || defined(RASPBERRY_CM5) || defined(HOST_WEB_UI)
 #include "transport/transport_manager.hpp"
 #endif
 
@@ -34,26 +36,56 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <unistd.h>
 #endif
 
 #include <atomic>
+#include <condition_variable>
 #include <fstream>
 #include <functional>
 #include <sstream>
 #include <thread>
+#include <utility>
 #endif
 
 #ifdef MTV3_BOARD
 #include "pipeline/shm_source.hpp"
 #elif defined(HOST_WEB_UI)
+#ifdef HOST_CAMERA_SOURCE
+#include "pipeline/camera_source.hpp"
+#else
 #include "pipeline/synthetic_source.hpp"
+#endif
 #else
 #include "pipeline/camera_source.hpp"
 #endif
 
 // путь к конфигу (--config); по умолчанию рядом с бинарником (cwd)
 static std::string gConfigPath = "config.json";
+
+static nlohmann::json runtimeConfig(nlohmann::json config)
+{
+    auto objectDetection = config.find("object_detection");
+    if (objectDetection == config.end() || !objectDetection->is_object())
+        return config;
+
+    std::error_code error;
+    std::filesystem::path configPath = std::filesystem::absolute(gConfigPath, error);
+    if (error)
+        configPath = gConfigPath;
+    const std::filesystem::path configDirectory = configPath.parent_path();
+    for (const char* key : {"model_onnx", "model_rknn", "class_names_file"})
+    {
+        auto value = objectDetection->find(key);
+        if (value == objectDetection->end() || !value->is_string())
+            continue;
+        std::filesystem::path path = value->get<std::string>();
+        if (!path.empty() && path.is_relative())
+            *value = (configDirectory / path).lexically_normal().string();
+    }
+    return config;
+}
 
 #if defined(MTV3_BOARD) || defined(RASPBERRY_CM5) || defined(HOST_WEB_UI)
 static time_t cfgMtime(const char* path)
@@ -65,35 +97,141 @@ static time_t cfgMtime(const char* path)
 // применение конфига к живому конвейеру (ставится в main); "" = успех
 static std::function<std::string(const nlohmann::json&)> gApply;
 static std::mutex gPreviewMutex;
+static std::condition_variable gPreviewInputReady;
+static std::condition_variable gPreviewJpegReady;
 static cv::Mat gPreviewSourceFrame;
 static cv::Mat gPreviewResultFrame;
-#ifdef RASPBERRY_CM5
+static std::string gPreviewSourceJpeg;
+static std::string gPreviewResultJpeg;
+static uint64_t gPreviewInputSequence = 0;
+static uint64_t gPreviewJpegSequence = 0;
+static bool gPreviewRunning = false;
+static bool gPreviewEnabled = true;
+static int gPreviewJpegQuality = 75;
+static int gPreviewMaxFps = 15;
+static int gPreviewMaxWidth = 960;
+static std::chrono::steady_clock::time_point gPreviewNextFrame{};
+static std::thread gPreviewThread;
+static std::atomic<int> gPreviewClients{0};
+#if defined(MTV3_BOARD) || defined(RASPBERRY_CM5)
 static std::unique_ptr<SystemAdmin> gSystemAdmin;
 #endif
 
-static void updatePreview(const cv::Mat& source, const cv::Mat& result)
+static void configurePreview(const nlohmann::json& config)
 {
     std::lock_guard<std::mutex> lock(gPreviewMutex);
-    gPreviewSourceFrame = source.clone();
-    gPreviewResultFrame = result.clone();
+    const auto preview = config.value("web_preview", nlohmann::json::object());
+    gPreviewEnabled = preview.value("enabled", true);
+    gPreviewJpegQuality = std::max(30, std::min(preview.value("jpeg_quality", 75), 95));
+    gPreviewMaxFps = std::max(1, std::min(preview.value("max_fps", 15), 30));
+    gPreviewMaxWidth = std::max(160, std::min(preview.value("max_width", 960), 1920));
+    gPreviewNextFrame = {};
 }
 
-static bool getPreviewJpeg(bool source, std::string& jpeg)
+static void updatePreview(const cv::Mat& source, const cv::Mat& result)
 {
-    cv::Mat frame;
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(gPreviewMutex);
+    if (!gPreviewEnabled || gPreviewClients.load() == 0 || now < gPreviewNextFrame)
+        return;
+    gPreviewNextFrame = now + std::chrono::milliseconds(1000 / gPreviewMaxFps);
+    gPreviewSourceFrame = source.clone();
+    gPreviewResultFrame = result.clone();
+    ++gPreviewInputSequence;
+    gPreviewInputReady.notify_one();
+}
+
+static cv::Mat resizePreview(const cv::Mat& frame, int maxWidth)
+{
+    if (frame.cols <= maxWidth)
+        return frame;
+    cv::Mat resized;
+    const double scale = static_cast<double>(maxWidth) / frame.cols;
+    cv::resize(frame, resized, {maxWidth, std::max(1, cvRound(frame.rows * scale))},
+               0.0, 0.0, cv::INTER_AREA);
+    return resized;
+}
+
+static std::string encodePreview(const cv::Mat& frame, int maxWidth, int quality)
+{
+    if (frame.empty())
+        return {};
+    const cv::Mat resized = resizePreview(frame, maxWidth);
+    std::vector<uchar> encoded;
+    const std::vector<int> encodeParams{cv::IMWRITE_JPEG_QUALITY, quality};
+    if (!cv::imencode(".jpg", resized, encoded, encodeParams))
+        return {};
+    return std::string(reinterpret_cast<const char*>(encoded.data()), encoded.size());
+}
+
+static void previewEncoderLoop()
+{
+    uint64_t consumedSequence = 0;
+    for (;;)
+    {
+        cv::Mat source;
+        cv::Mat result;
+        int quality;
+        int maxWidth;
+        uint64_t sequence;
+        {
+            std::unique_lock<std::mutex> lock(gPreviewMutex);
+            gPreviewInputReady.wait(lock, [&] {
+                return !gPreviewRunning || gPreviewInputSequence != consumedSequence;
+            });
+            if (!gPreviewRunning)
+                return;
+            source = gPreviewSourceFrame;
+            result = gPreviewResultFrame;
+            quality = gPreviewJpegQuality;
+            maxWidth = gPreviewMaxWidth;
+            sequence = gPreviewInputSequence;
+        }
+        std::string sourceJpeg = encodePreview(source, maxWidth, quality);
+        std::string resultJpeg = encodePreview(result, maxWidth, quality);
+        {
+            std::lock_guard<std::mutex> lock(gPreviewMutex);
+            if (!sourceJpeg.empty())
+                gPreviewSourceJpeg = std::move(sourceJpeg);
+            if (!resultJpeg.empty())
+                gPreviewResultJpeg = std::move(resultJpeg);
+            consumedSequence = sequence;
+            gPreviewJpegSequence = sequence;
+        }
+        gPreviewJpegReady.notify_all();
+    }
+}
+
+static void startPreviewEncoder()
+{
+    std::lock_guard<std::mutex> lock(gPreviewMutex);
+    if (gPreviewRunning)
+        return;
+    gPreviewRunning = true;
+    gPreviewThread = std::thread(previewEncoderLoop);
+}
+
+static void stopPreviewEncoder()
+{
     {
         std::lock_guard<std::mutex> lock(gPreviewMutex);
-        const cv::Mat& current = source ? gPreviewSourceFrame : gPreviewResultFrame;
-        if (current.empty())
-            return false;
-        frame = current.clone();
+        gPreviewRunning = false;
     }
+    gPreviewInputReady.notify_all();
+    gPreviewJpegReady.notify_all();
+    if (gPreviewThread.joinable())
+        gPreviewThread.join();
+}
 
-    std::vector<uchar> encoded;
-    const std::vector<int> encodeParams{cv::IMWRITE_JPEG_QUALITY, 80};
-    if (!cv::imencode(".jpg", frame, encoded, encodeParams))
+static bool getPreviewJpeg(bool source, std::string& jpeg, uint64_t* sequence = nullptr)
+{
+    std::lock_guard<std::mutex> lock(gPreviewMutex);
+    const std::string& current = source ? gPreviewSourceJpeg : gPreviewResultJpeg;
+    if (current.empty())
         return false;
-    jpeg.assign(reinterpret_cast<const char*>(encoded.data()), encoded.size());
+    jpeg = current;
+    if (sequence)
+        *sequence = gPreviewJpegSequence;
     return true;
 }
 
@@ -161,8 +299,8 @@ details details>summary{font-weight:normal;color:#9bd}
 <div class="streams"><div><h4 id="sourceTitle">Source</h4><div class="selectFrame"><img id="src" alt="source is not ready"><canvas id="selection"></canvas></div></div>
 <div><h4 id="resultTitle">Detection result</h4><img id="v" alt="result is not ready"></div></div><br>
 <div class="blobSampler" id="blobSampler"><span id="blobPatternLabel">Blob pattern index</span><input id="blobPattern" type="number" min="0" value="0">
-<button id="configureBlobButton" onclick="configureBlobFromSelection()">Configure blob from selected area</button>
-<span class="hint" id="blobSelectionHint">Drag a rectangle over the source image</span></div>
+<button id="configureBlobButton" onclick="configureBlobFromSelection()">Configure blob from selected contour</button>
+<span class="hint" id="blobSelectionHint">Hold the pointer and trace the object contour</span></div>
 <div id="modes"></div>
 <h4><span id="parametersTitle">Параметры</span> <span class="hint" id="parametersHint">(секция активного режима + общие)</span></h4>
 <div><label class="hint"><input type="checkbox" id="all" onchange="render()"> <span id="showAllLabel">показать все секции</span></label>
@@ -175,7 +313,7 @@ details details>summary{font-weight:normal;color:#9bd}
 <button id="applyButton" onclick="send('/apply')">Применить (до перезапуска)</button>
 <button id="saveButton" onclick="send('/config')">Сохранить (постоянно)</button>
 <button id="revertButton" onclick="revert()">Откатить к сохранённому</button><span id="st"></span>
-<details><summary id="adminTitle">CM5 system administration</summary><div class="body">
+<details><summary id="adminTitle">System administration</summary><div class="body">
 <div class="row"><label>Admin token</label><input id="admToken" type="password"></div>
 <button onclick="adminGet('status')">System status</button>
 <button onclick="adminGet('processes')">Processes</button>
@@ -189,7 +327,7 @@ details details>summary{font-weight:normal;color:#9bd}
 <button onclick="adminPost({op:'process',pid:Number(admPid.value),action:'kill'})">Kill</button>
 <button onclick="adminPost({op:'process',pid:Number(admPid.value),action:'pause'})">Pause</button>
 <button onclick="adminPost({op:'process',pid:Number(admPid.value),action:'resume'})">Resume</button>
-<div class="row"><label>Network request JSON</label><input id="admNet" type="text" value='{"op":"network","connection":"Wi-Fi","mode":"dhcp"}'></div>
+<div class="row"><label>Network request JSON</label><input id="admNet" type="text" value='{"op":"network","connection":"wlan0","mode":"dhcp"}'></div>
 <button onclick="adminNetwork()">Apply network configuration</button>
 <div class="row"><label>Terminal command</label><input id="admCmd" type="text"></div>
 <button onclick="adminPost({op:'terminal',command:document.getElementById('admCmd').value})">Execute</button>
@@ -199,8 +337,8 @@ details details>summary{font-weight:normal;color:#9bd}
 const modes=['off','aruco_detection','object_detection','blob_detection','line_detection','circle_detection'];
 let language='ru';
 const uiText={
-  ru:{language:'Язык',source:'Исходное видео',result:'Результат детекции',blobPattern:'Номер цветового шаблона',configureBlob:'Настроить blob по выделенной области',selectHint:'Выделите прямоугольник на исходном видео',parameters:'Параметры',parametersHint:'(активный алгоритм и общие настройки)',showAll:'показать все разделы',raw:'редактировать JSON',detectorTab:'Параметры детектора',generalTab:'Общие параметры',uartTab:'Метаданные UART',apply:'Применить',save:'Сохранить',revert:'Откатить',linkedEditor:'Редактор связанного объекта',components:'Количество blobs в связанном объекте',selectVideo:'Выбрать на видео',remove:'Удалить',drawLink:'Провести связь на видео',manualLink:'Добавить связь вручную',base:'базовый',baseLink:'Базовая связь',admin:'Системное администрирование CM5'},
-  en:{language:'Language',source:'Source video',result:'Detection result',blobPattern:'Blob pattern index',configureBlob:'Configure blob from selected area',selectHint:'Drag a rectangle over the source image',parameters:'Parameters',parametersHint:'(active detector and general settings)',showAll:'show all sections',raw:'edit JSON',detectorTab:'Detector parameters',generalTab:'General parameters',uartTab:'UART metadata',apply:'Apply',save:'Save',revert:'Revert',linkedEditor:'Linked blob object editor',components:'Number of blobs in linked object',selectVideo:'Select on video',remove:'Remove',drawLink:'Draw link on video',manualLink:'Add link manually',base:'base',baseLink:'Base link',admin:'CM5 system administration'}
+  ru:{language:'Язык',source:'Исходное видео',result:'Результат детекции',blobPattern:'Номер цветового шаблона',configureBlob:'Настроить blob по выделенному контуру',selectHint:'Удерживая кнопку, обведите контур объекта',parameters:'Параметры',parametersHint:'(активный алгоритм и общие настройки)',showAll:'показать все разделы',raw:'редактировать JSON',detectorTab:'Параметры детектора',generalTab:'Общие параметры',uartTab:'Метаданные UART',apply:'Применить',save:'Сохранить',revert:'Откатить',linkedEditor:'Редактор связанного объекта',components:'Количество blobs в связанном объекте',selectVideo:'Выбрать на видео',remove:'Удалить',drawLink:'Провести связь на видео',manualLink:'Добавить связь вручную',base:'базовый',baseLink:'Базовая связь',admin:'Системное администрирование'},
+  en:{language:'Language',source:'Source video',result:'Detection result',blobPattern:'Blob pattern index',configureBlob:'Configure blob from selected contour',selectHint:'Hold the pointer and trace the object contour',parameters:'Parameters',parametersHint:'(active detector and general settings)',showAll:'show all sections',raw:'edit JSON',detectorTab:'Detector parameters',generalTab:'General parameters',uartTab:'UART metadata',apply:'Apply',save:'Save',revert:'Revert',linkedEditor:'Linked blob object editor',components:'Number of blobs in linked object',selectVideo:'Select on video',remove:'Remove',drawLink:'Draw link on video',manualLink:'Add link manually',base:'base',baseLink:'Base link',admin:'System administration'}
 };
 const modeNames={ru:{off:'Выключено',aruco_detection:'ArUco-маркеры',object_detection:'Объекты YOLO',blob_detection:'Цветовые blobs',line_detection:'Линии',circle_detection:'Окружности'},en:{off:'Off',aruco_detection:'ArUco detection',object_detection:'Object detection',blob_detection:'Blob detection',line_detection:'Line detection',circle_detection:'Circle detection'}};
 function tr(key){return (uiText[language]||uiText.en)[key]||key;}
@@ -223,7 +361,7 @@ function startVideoStream(id,path){
 startVideoStream('src','/source.mjpg');
 startVideoStream('v','/preview.mjpg');
 const selectionCanvas=document.getElementById('selection'),selectionContext=selectionCanvas.getContext('2d');
-let selectionStart=null,selectionRect=null,linkedAction=null,linkPreview=null;
+let selectionStart=null,selectionPolygon=null,linkedAction=null,linkPreview=null;
 const linkedPoints={};
 function resizeSelectionOverlay(){
   const image=document.getElementById('src'),rect=image.getBoundingClientRect();
@@ -236,54 +374,61 @@ function drawSelection(){selectionContext.clearRect(0,0,selectionCanvas.width,se
       selectionContext.strokeStyle=link.id==='0-1'?'#ffa500':'#00ffff';selectionContext.lineWidth=3;selectionContext.beginPath();selectionContext.moveTo(a.x*selectionCanvas.width,a.y*selectionCanvas.height);selectionContext.lineTo(b.x*selectionCanvas.width,b.y*selectionCanvas.height);selectionContext.stroke();});
     Object.entries(points).forEach(([nodeId,point])=>{const x=point.x*selectionCanvas.width,y=point.y*selectionCanvas.height;selectionContext.fillStyle='#fff';selectionContext.beginPath();selectionContext.arc(x,y,7,0,Math.PI*2);selectionContext.fill();selectionContext.fillStyle='#111';selectionContext.font='11px sans-serif';selectionContext.fillText('N'+nodeId,x-6,y+4);});});
   if(linkPreview){selectionContext.strokeStyle='#28b4ff';selectionContext.lineWidth=3;selectionContext.setLineDash([7,5]);selectionContext.beginPath();selectionContext.moveTo(linkPreview.a.x,linkPreview.a.y);selectionContext.lineTo(linkPreview.b.x,linkPreview.b.y);selectionContext.stroke();selectionContext.setLineDash([]);}
-  if(selectionRect){selectionContext.fillStyle='rgba(40,180,255,.18)';selectionContext.strokeStyle='#28b4ff';selectionContext.lineWidth=2;
-    selectionContext.fillRect(selectionRect.x,selectionRect.y,selectionRect.w,selectionRect.h);selectionContext.strokeRect(selectionRect.x,selectionRect.y,selectionRect.w,selectionRect.h);}}
-selectionCanvas.onpointerdown=event=>{selectionStart=selectionPoint(event);selectionCanvas.setPointerCapture(event.pointerId);if(linkedAction&&linkedAction.type==='link')linkPreview={a:selectionStart,b:selectionStart};};
+  if(selectionPolygon&&selectionPolygon.length){selectionContext.fillStyle='rgba(40,180,255,.18)';selectionContext.strokeStyle='#28b4ff';selectionContext.lineWidth=2;
+    selectionContext.beginPath();selectionContext.moveTo(selectionPolygon[0].x,selectionPolygon[0].y);selectionPolygon.slice(1).forEach(point=>selectionContext.lineTo(point.x,point.y));
+    if(!selectionStart&&selectionPolygon.length>=3)selectionContext.closePath();selectionContext.fill();selectionContext.stroke();}}
+selectionCanvas.onpointerdown=event=>{selectionStart=selectionPoint(event);selectionCanvas.setPointerCapture(event.pointerId);if(linkedAction&&linkedAction.type==='link')linkPreview={a:selectionStart,b:selectionStart};else selectionPolygon=[selectionStart];};
 selectionCanvas.onpointermove=event=>{if(!selectionStart)return;const point=selectionPoint(event);
   if(linkedAction&&linkedAction.type==='link')linkPreview={a:selectionStart,b:point};
-  else selectionRect={x:Math.min(selectionStart.x,point.x),y:Math.min(selectionStart.y,point.y),w:Math.abs(point.x-selectionStart.x),h:Math.abs(point.y-selectionStart.y)};drawSelection();};
+  else if(!selectionPolygon.length||Math.hypot(point.x-selectionPolygon[selectionPolygon.length-1].x,point.y-selectionPolygon[selectionPolygon.length-1].y)>=3)selectionPolygon.push(point);drawSelection();};
 selectionCanvas.onpointerup=event=>{const end=selectionPoint(event),start=selectionStart;selectionStart=null;
   if(linkedAction&&linkedAction.type==='link'){finishLinkedLine(start,end);linkPreview=null;drawSelection();return;}
+  if(selectionPolygon&&selectionPolygon.length<3)selectionPolygon=null;drawSelection();
   if(linkedAction&&linkedAction.type==='part')assignLinkedPartFromSelection(linkedAction.patternIndex,linkedAction.nodeIndex);};
 function percentile(values,fraction){values.sort((a,b)=>a-b);return values[Math.min(values.length-1,Math.floor(values.length*fraction))];}
+function pointInPolygon(x,y,polygon){let inside=false;for(let i=0,j=polygon.length-1;i<polygon.length;j=i++){
+  const a=polygon[i],b=polygon[j];if(((a.y>y)!==(b.y>y))&&(x<(b.x-a.x)*(y-a.y)/(b.y-a.y)+a.x))inside=!inside;}return inside;}
+function polygonArea(polygon){let area=0;for(let i=0,j=polygon.length-1;i<polygon.length;j=i++)area+=polygon[j].x*polygon[i].y-polygon[i].x*polygon[j].y;return Math.abs(area)*.5;}
+function polygonCenter(polygon){return{x:polygon.reduce((sum,p)=>sum+p.x,0)/polygon.length,y:polygon.reduce((sum,p)=>sum+p.y,0)/polygon.length};}
 function configureBlobFromSelection(){
   const currentConfig=current();if(!currentConfig)return;cfgObj=currentConfig;
   const image=document.getElementById('src'),patterns=((cfgObj.blob_detection||{}).one_color_patterns||[]);
   const index=Number(document.getElementById('blobPattern').value);
-  if(!selectionRect||selectionRect.w<4||selectionRect.h<4){st.textContent='Select a blob area on the source image first.';return;}
+  if(!selectionPolygon||selectionPolygon.length<3){st.textContent='Trace a closed contour around the blob first.';return;}
   if(!image.naturalWidth||!image.naturalHeight){st.textContent='Source frame is not ready.';return;}
   if(!Number.isInteger(index)||index<0||index>=patterns.length){st.textContent='Blob pattern index is out of range.';return;}
   const scaleX=image.naturalWidth/selectionCanvas.width,scaleY=image.naturalHeight/selectionCanvas.height;
-  const roi={x:Math.max(0,Math.floor(selectionRect.x*scaleX)),y:Math.max(0,Math.floor(selectionRect.y*scaleY)),
-    w:Math.max(1,Math.floor(selectionRect.w*scaleX)),h:Math.max(1,Math.floor(selectionRect.h*scaleY))};
+  const polygon=selectionPolygon.map(point=>({x:point.x*scaleX,y:point.y*scaleY}));
+  const xs=polygon.map(point=>point.x),ys=polygon.map(point=>point.y);
+  const roi={x:Math.max(0,Math.floor(Math.min(...xs))),y:Math.max(0,Math.floor(Math.min(...ys))),
+    w:Math.max(1,Math.ceil(Math.max(...xs))-Math.floor(Math.min(...xs))),h:Math.max(1,Math.ceil(Math.max(...ys))-Math.floor(Math.min(...ys)))};
   roi.w=Math.min(roi.w,image.naturalWidth-roi.x);roi.h=Math.min(roi.h,image.naturalHeight-roi.y);
   const sample=document.createElement('canvas');sample.width=image.naturalWidth;sample.height=image.naturalHeight;
   const context=sample.getContext('2d',{willReadFrequently:true});context.drawImage(image,0,0);
-  const pixels=context.getImageData(roi.x,roi.y,roi.w,roi.h).data,samples=[],centerSamples=[];
+  const pixels=context.getImageData(roi.x,roi.y,roi.w,roi.h).data,samples=[];
   const stride=Math.max(1,Math.floor((roi.w*roi.h)/12000));
-  for(let pixel=0;pixel<roi.w*roi.h;pixel+=stride){const offset=pixel*4,r=pixels[offset],g=pixels[offset+1],b=pixels[offset+2],y=.299*r+.587*g+.114*b;
-    const sample=[y,(r-y)*.713+128,(b-y)*.564+128],x=pixel%roi.w,row=Math.floor(pixel/roi.w);samples.push(sample);
-    if(x>roi.w*.35&&x<roi.w*.65&&row>roi.h*.35&&row<roi.h*.65)centerSamples.push(sample);}
-  const trainingSamples=centerSamples.length?centerSamples:samples;
-  const center=[0,1,2].map(channel=>percentile(trainingSamples.map(sample=>sample[channel]),.5));
+  for(let pixel=0;pixel<roi.w*roi.h;pixel+=stride){const x=pixel%roi.w,row=Math.floor(pixel/roi.w);if(!pointInPolygon(roi.x+x+.5,roi.y+row+.5,polygon))continue;
+    const offset=pixel*4,r=pixels[offset],g=pixels[offset+1],b=pixels[offset+2],y=.299*r+.587*g+.114*b;samples.push([y,(r-y)*.713+128,(b-y)*.564+128]);}
+  if(samples.length<10){st.textContent='Selected contour is too small.';return;}
+  const center=[0,1,2].map(channel=>percentile(samples.map(sample=>sample[channel]),.5));
   let foreground=samples.filter(sample=>Math.hypot(sample[1]-center[1],sample[2]-center[2])<=24&&Math.abs(sample[0]-center[0])<=55);
   if(foreground.length<samples.length*.1)foreground=samples.sort((a,b)=>Math.hypot(a[0]-center[0],a[1]-center[1],a[2]-center[2])-Math.hypot(b[0]-center[0],b[1]-center[1],b[2]-center[2])).slice(0,Math.max(1,Math.floor(samples.length*.5)));
   const channels=[0,1,2].map(channel=>foreground.map(sample=>sample[channel]));
   const lower=channels.map(values=>clampByte(percentile(values,.05)-6));
   const upper=channels.map(values=>clampByte(percentile(values,.95)+6));
-  const pattern=patterns[index],area=roi.w*roi.h*foreground.length/samples.length;
+  const pattern=patterns[index],area=polygonArea(polygon)*foreground.length/samples.length;
   pattern.lower_range=lower;pattern.upper_range=upper;pattern.min_area=Math.max(1,Math.round(area*.45));pattern.max_area=Math.round(area*1.9);
   pattern.min_width=Math.max(1,Math.round(roi.w*.5));pattern.min_height=Math.max(1,Math.round(roi.h*.5));
   pattern.min_luminance=lower[0];pattern.max_luminance=upper[0];
   pattern.min_chrominance_red=lower[1];pattern.max_chrominance_red=upper[1];
   pattern.min_chrominance_blue=lower[2];pattern.max_chrominance_blue=upper[2];
-  st.textContent='Blob pattern '+index+' configured from '+roi.w+'×'+roi.h+' px selection. Review and Apply settings.';
+  st.textContent='Blob pattern '+index+' configured from a '+Math.round(polygonArea(polygon))+' px² contour. Review and Apply settings.';
   render();
 }
 const md=document.getElementById('modes');
 let cur='', cfgObj={}, paramTab='detector';
 modes.forEach(m=>{const b=document.createElement('button');b.textContent=(modeNames[language]||modeNames.en)[m]||m;b.dataset.m=m;
-b.onclick=()=>fetch('/mode/'+m).then(r=>r.text()).then(t=>{st.textContent=t;load();});
+b.onclick=()=>{st.textContent=language==='ru'?'Запуск режима…':'Starting mode…';fetch('/mode/'+m).then(r=>r.text()).then(t=>{st.textContent=t;if(t.startsWith('mode='))load();}).catch(error=>{st.textContent=(language==='ru'?'Ошибка переключения режима: ':'Mode switch failed: ')+error.message;});};
 md.appendChild(b);});
 function mark(){[...md.children].forEach(b=>b.className=b.dataset.m===cur?'act':'');document.getElementById('blobSampler').style.display=cur==='blob_detection'?'flex':'none';}
 function setParamTab(tab){
@@ -337,7 +482,10 @@ size:'Size-matching criteria for a composite-object node.',size_measure:'Blob pr
 min:'Lowest value accepted by this criterion.',max:'Highest value accepted by this criterion.',nodes:'Primitive parts required to form this composite object.',links:'Spatial relationships required between composite-object parts.',length_absolute:'Allowed absolute distance between linked parts, in pixels.',length_relative:'Allowed distance relative to the base part size.',angle_absolute:'Allowed absolute direction between linked parts, in degrees.',angle_relative:'Allowed direction relative to the base link, in degrees.'
 };
 const ruLabels={
-enabled:'Включено',device:'Устройство',baud:'Скорость UART, бит/с',format:'Формат',host:'Адрес получателя',port:'Порт',max_objects:'Максимум объектов',blob_detection:'Детекция blobs',aruco_detection:'Детекция ArUco',object_detection:'Детекция объектов',line_detection:'Детекция линий',circle_detection:'Детекция окружностей',general_params:'Общие параметры',transports:'Транспортные протоколы',uart_binary:'Бинарный UART',processing_mode:'Режим обработки',ui_language:'Язык интерфейса',debug_mode:'Отладочный режим',camera_rotation:'Поворот камеры, градусы',exposure_ev:'Экспозиция, EV',white_balance_bgr:'Баланс белого [B, G, R]',contrast:'Контрастность',brightness:'Яркость',enable_one_color_detection:'Детекция отдельных цветовых областей',enable_multicolor_detection:'Детекция связанных объектов',max_composite_objects:'Максимум связанных объектов',one_color_patterns:'Цветовые шаблоны',multicolor_patterns:'Шаблоны связанных объектов',min_area:'Минимальная площадь, пикс²',max_area:'Максимальная площадь, пикс²',min_width:'Минимальная ширина, пикс',min_height:'Минимальная высота, пикс',lower_range:'Нижняя граница YCrCb [Y, Cr, Cb]',upper_range:'Верхняя граница YCrCb [Y, Cr, Cb]',min_circularity:'Минимальная округлость',max_circularity:'Максимальная округлость',min_inertia:'Минимальная инерция',max_inertia:'Максимальная инерция',min_convexity:'Минимальная выпуклость',max_convexity:'Максимальная выпуклость',min_vertices:'Минимум вершин',max_vertices:'Максимум вершин',polygon_approximation:'Аппроксимация контура',dictionary:'Словарь ArUco',marker_length:'Размер маркера, м',allowed_ids:'Разрешённые ID',model_onnx:'Файл модели ONNX',class_names_file:'Файл названий классов',input_width:'Ширина входа, пикс',input_height:'Высота входа, пикс',confidence_threshold:'Порог уверенности',nms_threshold:'Порог NMS IoU',min_radius:'Минимальный радиус, пикс',max_radius:'Максимальный радиус, пикс',distance:'Минимальное расстояние центров, пикс',min_angle:'Минимальный угол, градусы',max_angle:'Максимальный угол, градусы',max_lines:'Максимум линий',threshold:'Порог',overall_threshold:'Общий порог',weight:'Вес',goal:'Целевое значение',size:'Размер',size_measure:'Способ измерения размера',nodes:'Компоненты',links:'Связи',length_absolute:'Абсолютная длина',length_relative:'Относительная длина',angle_absolute:'Абсолютный угол',angle_relative:'Относительный угол'};
+enabled:'Включено',device:'Устройство',baud:'Скорость UART, бит/с',format:'Формат',host:'Адрес получателя',port:'Порт',max_objects:'Максимум объектов',blob_detection:'Детекция blobs',aruco_detection:'Детекция ArUco',object_detection:'Детекция объектов',line_detection:'Детекция линий',circle_detection:'Детекция окружностей',general_params:'Общие параметры',transports:'Транспортные протоколы',uart_binary:'Бинарный UART',processing_mode:'Режим обработки',ui_language:'Язык интерфейса',debug_mode:'Отладочный режим',camera_rotation:'Поворот камеры, градусы',exposure_ev:'Экспозиция, EV',white_balance_bgr:'Баланс белого [B, G, R]',contrast:'Контрастность',brightness:'Яркость',enable_one_color_detection:'Детекция отдельных цветовых областей',enable_multicolor_detection:'Детекция связанных объектов',max_composite_objects:'Максимум связанных объектов',one_color_patterns:'Цветовые шаблоны',multicolor_patterns:'Шаблоны связанных объектов',min_area:'Минимальная площадь, пикс²',max_area:'Максимальная площадь, пикс²',min_width:'Минимальная ширина, пикс',min_height:'Минимальная высота, пикс',lower_range:'Нижняя граница YCrCb [Y, Cr, Cb]',upper_range:'Верхняя граница YCrCb [Y, Cr, Cb]',min_circularity:'Минимальная округлость',max_circularity:'Максимальная округлость',min_inertia:'Минимальная инерция',max_inertia:'Максимальная инерция',min_convexity:'Минимальная выпуклость',max_convexity:'Максимальная выпуклость',min_vertices:'Минимум вершин',max_vertices:'Максимум вершин',polygon_approximation:'Аппроксимация контура',dictionary:'Словарь ArUco',marker_length:'Размер маркера, м',allowed_ids:'Разрешённые ID',model_onnx:'Файл модели ONNX',model_rknn:'Файл модели RKNN',class_names_file:'Файл названий классов',input_width:'Ширина входа, пикс',input_height:'Высота входа, пикс',confidence_threshold:'Порог уверенности',nms_threshold:'Порог NMS IoU',output_layout:'Расположение данных выхода',output_attributes:'Количество атрибутов выхода',output_has_objectness:'Выход содержит objectness',min_radius:'Минимальный радиус, пикс',max_radius:'Максимальный радиус, пикс',distance:'Минимальное расстояние центров, пикс',min_angle:'Минимальный угол, градусы',max_angle:'Максимальный угол, градусы',max_lines:'Максимум линий',threshold:'Порог',overall_threshold:'Общий порог',weight:'Вес',goal:'Целевое значение',size:'Размер',size_measure:'Способ измерения размера',nodes:'Компоненты',links:'Связи',length_absolute:'Абсолютная длина',length_relative:'Относительная длина',angle_absolute:'Абсолютный угол',angle_relative:'Относительный угол'};
+Object.assign(labels,{web_preview:'Web preview',max_width:'Maximum preview width, px'});
+Object.assign(hints,{web_preview:'Controls the shared MJPEG cache used by all web clients.',max_width:'Frames wider than this value are downscaled before JPEG encoding.'});
+Object.assign(ruLabels,{web_preview:'Веб-просмотр',jpeg_quality:'Качество JPEG, 30–95',max_fps:'Максимальная частота, FPS',max_width:'Максимальная ширина, пикс'});
 function fieldLabel(key){return language==='ru'?(ruLabels[key]||labels[key]||key.replaceAll('_',' ')):(labels[key]||key.replaceAll('_',' ').replace(/^./,c=>c.toUpperCase()));}
 function fieldHint(key){return language==='ru'?('Настройка «'+fieldLabel(key)+'».'):(hints[key]||'Configuration parameter: '+fieldLabel(key)+'.');}
 function contextualFieldLabel(key,path){
@@ -405,18 +553,18 @@ function setLinkedNodeCount(patternIndex,value){syncLinkedEdit(blob=>{
   const points=linkedPoints[patternIndex]||{};Object.keys(points).forEach(id=>{if(Number(id)>=count)delete points[id];});
 });}
 function startLinkedPartSelection(patternIndex,nodeIndex){
-  cfgObj=collect();linkedAction={type:'part',patternIndex,nodeIndex};selectionRect=null;linkPreview=null;st.textContent='Drag a rectangle around the object for component N'+nodeIndex+'.';render();
+  cfgObj=collect();linkedAction={type:'part',patternIndex,nodeIndex};selectionPolygon=null;linkPreview=null;st.textContent='Trace the object contour for component N'+nodeIndex+'.';render();
 }
 function assignLinkedPartFromSelection(patternIndex,nodeIndex){
-  if(!selectionRect||selectionRect.w<4||selectionRect.h<4){st.textContent='Draw a rectangle around the component first.';return;}
+  if(!selectionPolygon||selectionPolygon.length<3){st.textContent='Trace the component contour first.';return;}
   cfgObj=collect();const node=cfgObj.blob_detection.multicolor_patterns[patternIndex].nodes[nodeIndex],colorId=(node.blob_id||[])[0];
   document.getElementById('blobPattern').value=colorId;linkedPoints[patternIndex]=linkedPoints[patternIndex]||{};
-  linkedPoints[patternIndex][nodeIndex]={x:(selectionRect.x+selectionRect.w/2)/selectionCanvas.width,y:(selectionRect.y+selectionRect.h/2)/selectionCanvas.height};
-  linkedAction=null;configureBlobFromSelection();selectionRect=null;st.textContent='Component N'+nodeIndex+' assigned to blob pattern '+colorId+'.';drawSelection();
+  const center=polygonCenter(selectionPolygon);linkedPoints[patternIndex][nodeIndex]={x:center.x/selectionCanvas.width,y:center.y/selectionCanvas.height};
+  linkedAction=null;configureBlobFromSelection();selectionPolygon=null;st.textContent='Component N'+nodeIndex+' assigned to blob pattern '+colorId+'.';drawSelection();
 }
 function startLinkedLine(patternIndex){
   cfgObj=collect();const points=linkedPoints[patternIndex]||{};if(Object.keys(points).length<2){st.textContent='Assign at least two components on the video first.';return;}
-  linkedAction={type:'link',patternIndex};selectionRect=null;st.textContent='Draw a line from one assigned component to another.';render();
+  linkedAction={type:'link',patternIndex};selectionPolygon=null;st.textContent='Draw a line from one assigned component to another.';render();
 }
 function nearestLinkedNode(patternIndex,point){let result=null,best=45;const points=linkedPoints[patternIndex]||{};
   Object.entries(points).forEach(([id,p])=>{const distance=Math.hypot(point.x-p.x*selectionCanvas.width,point.y-p.y*selectionCanvas.height);if(distance<best){best=distance;result=Number(id);}});return result;}
@@ -553,7 +701,7 @@ function current(){
 }
 function send(ep){
   const o=current(); if(!o)return;
-  fetch(ep,{method:'POST',body:JSON.stringify(o,null,2)})
+  fetch(ep,{method:'POST',headers:admHeaders(),body:JSON.stringify(o,null,2)})
     .then(r=>r.text()).then(t=>{st.textContent=t;
       if(ep==='/config')load(); else {cfgObj=o;cur=(o.general_params||{}).processing_mode||cur;mark();}});
 }
@@ -595,6 +743,11 @@ static void sendResp(int c, const char* type, const std::string& body)
 
 static void sendMjpegStream(int c, bool source)
 {
+    struct ClientGuard
+    {
+        ClientGuard() { ++gPreviewClients; }
+        ~ClientGuard() { --gPreviewClients; }
+    } clientGuard;
     static constexpr char header[] =
         "HTTP/1.0 200 OK\r\n"
         "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
@@ -604,22 +757,35 @@ static void sendMjpegStream(int c, bool source)
     if (!sendAll(c, header, sizeof(header) - 1))
         return;
 
+    uint64_t sentSequence = 0;
     while (true)
     {
         std::string jpeg;
-        if (getPreviewJpeg(source, jpeg))
         {
-            char partHeader[128];
-            int size = snprintf(partHeader, sizeof(partHeader),
-                                "--frame\r\nContent-Type: image/jpeg\r\n"
-                                "Content-Length: %zu\r\n\r\n",
-                                jpeg.size());
-            if (!sendAll(c, partHeader, static_cast<size_t>(size)) ||
-                !sendAll(c, jpeg.data(), jpeg.size()) ||
-                !sendAll(c, "\r\n", 2))
+            std::unique_lock<std::mutex> lock(gPreviewMutex);
+            gPreviewJpegReady.wait_for(lock, std::chrono::seconds(2), [&] {
+                return !gPreviewRunning || gPreviewJpegSequence != sentSequence;
+            });
+            if (!gPreviewRunning)
                 return;
+            if (gPreviewJpegSequence == sentSequence)
+                continue;
+            const std::string& current = source ? gPreviewSourceJpeg
+                                                : gPreviewResultJpeg;
+            if (current.empty())
+                continue;
+            jpeg = current;
+            sentSequence = gPreviewJpegSequence;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(67));
+        char partHeader[128];
+        int size = snprintf(partHeader, sizeof(partHeader),
+                            "--frame\r\nContent-Type: image/jpeg\r\n"
+                            "Content-Length: %zu\r\n\r\n",
+                            jpeg.size());
+        if (!sendAll(c, partHeader, static_cast<size_t>(size)) ||
+            !sendAll(c, jpeg.data(), jpeg.size()) ||
+            !sendAll(c, "\r\n", 2))
+            return;
     }
 }
 
@@ -644,6 +810,10 @@ static void controlServer(int port)
         int c = accept(sfd, nullptr, nullptr);
         if (c < 0)
             continue;
+        timeval sendTimeout{};
+        sendTimeout.tv_sec = 2;
+        setsockopt(c, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, sizeof(sendTimeout));
+        setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &sendTimeout, sizeof(sendTimeout));
 
         std::thread([c]() {
 
@@ -677,7 +847,7 @@ static void controlServer(int port)
         bool isApply = req.compare(0, 12, "POST /apply ") == 0;
         bool isSave = req.compare(0, 13, "POST /config ") == 0;
 
-#ifdef RASPBERRY_CM5
+#if defined(MTV3_BOARD) || defined(RASPBERRY_CM5)
         const bool isAdminPost = req.compare(0, 12, "POST /admin ") == 0;
         const bool isAdminGet = req.compare(0, 11, "GET /admin/") == 0;
         if ((isAdminPost || isAdminGet) &&
@@ -746,6 +916,16 @@ static void controlServer(int port)
             try
             {
                 nlohmann::json j = nlohmann::json::parse(req.substr(bodyStart));
+#if defined(MTV3_BOARD) || defined(RASPBERRY_CM5)
+                if (gSystemAdmin && !gSystemAdmin->permitsConfiguration(j) &&
+                    !gSystemAdmin->authorized(req))
+                {
+                    sendResp(c, "application/json",
+                             R"({"error":"admin token is required to change system_admin"})");
+                    close(c);
+                    return;
+                }
+#endif
                 std::string err = gApply ? gApply(j) : "";   // сначала проверка боем
                 if (!err.empty())
                 {
@@ -862,6 +1042,10 @@ int main(int argc, char** argv)
     // --config P: путь к config.json (по умолчанию ./config.json)
     int dumpEvery = 0;
     int cameraDevice = 0;
+    int cameraWidth = 640;
+    int cameraHeight = 480;
+    int cameraFps = 15;
+    bool cameraMjpeg = false;
     std::string dumpDir = "/tmp";
     for (int i = 1; i < argc; ++i)
     {
@@ -873,6 +1057,14 @@ int main(int argc, char** argv)
             gConfigPath = argv[++i];
         else if (!strcmp(argv[i], "--camera") && i + 1 < argc)
             cameraDevice = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--camera-width") && i + 1 < argc)
+            cameraWidth = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--camera-height") && i + 1 < argc)
+            cameraHeight = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--camera-fps") && i + 1 < argc)
+            cameraFps = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--camera-mjpeg"))
+            cameraMjpeg = true;
     }
 
     // 1. Конфиг
@@ -894,9 +1086,12 @@ int main(int argc, char** argv)
         std::cerr << "Failed to open config file: " << gConfigPath << std::endl;
         return -1;
     }
+#if defined(MTV3_BOARD) || defined(RASPBERRY_CM5) || defined(HOST_WEB_UI)
+    configurePreview(reader.getRawConfig());
+#endif
 
     // 2-3. Процессор (фабрика внутри менеджера)
-    ProcessingManager manager(reader.getRawConfig());
+    ProcessingManager manager(runtimeConfig(reader.getRawConfig()));
 
     // 4. Источник кадров
 #ifdef MTV3_BOARD
@@ -908,8 +1103,21 @@ int main(int argc, char** argv)
     }
     std::cout << "shm source: " << source.width() << "x" << source.height() << std::endl;
 #elif defined(HOST_WEB_UI)
+#ifdef HOST_CAMERA_SOURCE
+    CameraSource source(cameraDevice, cv::CAP_V4L2, cameraWidth, cameraHeight,
+                        cameraFps, cameraMjpeg);
+    if (!source.isOpened())
+    {
+        std::cerr << "Failed to open host camera " << cameraDevice << std::endl;
+        return -1;
+    }
+    std::cout << "host UI source: camera " << cameraDevice << " requested "
+              << cameraWidth << 'x' << cameraHeight << '@' << cameraFps
+              << (cameraMjpeg ? " MJPEG" : " default format") << std::endl;
+#else
     SyntheticSource source;
     std::cout << "host UI source: synthetic 640x480 @ 30 FPS" << std::endl;
+#endif
 #else
     CameraSource source(cameraDevice);
     if (!source.isOpened())
@@ -925,7 +1133,7 @@ int main(int argc, char** argv)
     auto t0 = std::chrono::steady_clock::now();
     long frames = 0;
     double currentFps = 0.0;
-#ifdef RASPBERRY_CM5
+#if defined(MTV3_BOARD) || defined(RASPBERRY_CM5) || defined(HOST_WEB_UI)
     std::unique_ptr<TransportManager> transports;
 #endif
     Pipeline pipeline(source, manager, [&](const ProcessedItem& item) {
@@ -952,7 +1160,7 @@ int main(int argc, char** argv)
             cv::imwrite(dumpDir + "/last.jpg", item.result);
             cv::imwrite(dumpDir + "/last_src.jpg", item.frame);
         }
-#ifdef RASPBERRY_CM5
+#if defined(MTV3_BOARD) || defined(RASPBERRY_CM5) || defined(HOST_WEB_UI)
         if (transports)
         {
             VisionFrame transportFrame;
@@ -1002,8 +1210,9 @@ int main(int argc, char** argv)
     gApply = [&manager](const nlohmann::json& j) -> std::string {
         try
         {
-            manager.reconfigure(j);
-#ifdef RASPBERRY_CM5
+            manager.reconfigure(runtimeConfig(j));
+            configurePreview(j);
+#if defined(MTV3_BOARD) || defined(RASPBERRY_CM5)
             gSystemAdmin = std::make_unique<SystemAdmin>(j);
 #endif
             return "";
@@ -1014,8 +1223,10 @@ int main(int argc, char** argv)
         }
     };
 
-#ifdef RASPBERRY_CM5
+#if defined(MTV3_BOARD) || defined(RASPBERRY_CM5) || defined(HOST_WEB_UI)
+#if defined(MTV3_BOARD) || defined(RASPBERRY_CM5)
     gSystemAdmin = std::make_unique<SystemAdmin>(reader.getRawConfig());
+#endif
     transports = std::make_unique<TransportManager>(
         reader.getRawConfig(), [](uint8_t detectorCode) -> bool {
             const char* mode = nullptr;
@@ -1061,7 +1272,10 @@ int main(int argc, char** argv)
                 continue;
             try
             {
-                manager.reconfigure(r2.getRawConfig());
+                const std::string error = gApply ? gApply(r2.getRawConfig())
+                                                 : "apply handler is not ready";
+                if (!error.empty())
+                    throw std::runtime_error(error);
                 std::cout << "config reloaded" << std::endl;
             }
             catch (const std::exception& e)
@@ -1071,6 +1285,7 @@ int main(int argc, char** argv)
             }
         }
     });
+    startPreviewEncoder();
     std::thread control(controlServer, 8081);
     control.detach();
 #endif
@@ -1081,6 +1296,7 @@ int main(int argc, char** argv)
 #if defined(MTV3_BOARD) || defined(RASPBERRY_CM5) || defined(HOST_WEB_UI)
     ctlRun = false;
     watcher.join();
+    stopPreviewEncoder();
 #endif
 
     source.release();

@@ -8,11 +8,12 @@
 #include "config/config_keys.hpp"
 #include "model/general_params.hpp"
 #include "processing/aruco_processor.hpp"
+#include "model/yolo_params.hpp"
 #ifdef MTV3_BOARD
 #include "model/classifier_params.hpp"
 #include "processing/classifier_processor.hpp"
+#include "processing/rknn_yolo_processor.hpp"
 #else
-#include "model/yolo_params.hpp"
 #include "processing/yolo_processor.hpp"
 #endif
 #include "processing/passthrough_processor.hpp"
@@ -56,7 +57,10 @@ std::unique_ptr<IFrameProcessor> ProcessingFactory::createProcessor(const nlohma
             return std::make_unique<ClassifierProcessor>(params);
         }
         case ProcessingType::ObjectDetection:
-            throw std::runtime_error("YOLO object detection is not available in the MTV3 RKNN build");
+        {
+            YoloParams params = rawConfig.at("object_detection").get<YoloParams>();
+            return std::make_unique<RknnYoloProcessor>(params);
+        }
 #else
         case ProcessingType::ObjectDetection:
         {
