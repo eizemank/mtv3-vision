@@ -1,7 +1,8 @@
 #!/bin/sh
 # S60mtv3 — автостарт камерного тракта MTV3 (MP без ISPP) + SeeSharpPy.
 # В overlay: /etc/init.d/S60mtv3 (chmod +x). Требует: /usr/bin/mtv3_cam_daemon,
-# /usr/bin/init_mp.sh, /opt/seesharp/{mainCV,config.json} (C++ SeeSharp, MTV3_BOARD).
+# /usr/bin/{init_mp.sh,mtv3_network.sh,mtv3_usb_gadget.sh},
+# /opt/seesharp/{mainCV,config.json} (C++ SeeSharp, MTV3_BOARD).
 #
 # CV-разрешение: сенсор работает 2112x1568, mainpath-resizer отдаёт CV_W x CV_H.
 
@@ -26,6 +27,11 @@ start() {
     # штатный UVC/aiq-стек не должен трогать камеру
     killall ispserver aiserver uvc_app rkisp_demo 2>/dev/null
 
+    if [ -x /usr/bin/mtv3_usb_gadget.sh ]; then
+        /usr/bin/mtv3_usb_gadget.sh start >"$LOG.usb.log" 2>&1 ||
+            echo "$(date) USB gadget startup failed" >>"$LOG.usb.log"
+    fi
+
     # NPU: PVTM просит 950 мВ (934 МГц), окно PWM-регулятора 710-858 мВ —
     # фиксируем частоту в пределах окна, иначе OPP-notifier спамит -22
     NPU_DF=/sys/class/devfreq/ffbc0000.npu
@@ -40,7 +46,7 @@ start() {
     echo $! > /var/run/mtv3_cam.pid
 
     if [ -x "$APP_DIR/mainCV" ]; then
-        ( cd "$APP_DIR" && respawn app ./mainCV ) &
+        ( cd "$APP_DIR" && respawn app ./mainCV --config "$APP_DIR/config.json" ) &
         echo $! > /var/run/mtv3_app.pid
     fi
 }
@@ -50,6 +56,8 @@ stop() {
         [ -f $p ] && kill "$(cat $p)" 2>/dev/null && rm -f $p
     done
     killall mtv3_cam_daemon 2>/dev/null
+    [ ! -x /usr/bin/mtv3_usb_gadget.sh ] ||
+        /usr/bin/mtv3_usb_gadget.sh stop >>"$LOG.usb.log" 2>&1 || true
 }
 
 case "$1" in
