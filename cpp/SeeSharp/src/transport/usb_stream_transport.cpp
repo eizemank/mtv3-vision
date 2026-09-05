@@ -15,6 +15,7 @@
 
 #include <nlohmann/json.hpp>
 #include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 
 #include "transport/metadata_json.hpp"
 
@@ -33,11 +34,12 @@ void putU32(uint8_t* destination, uint32_t value)
 }
 
 UsbStreamTransport::UsbStreamTransport(std::string device, int jpegQuality,
-                                       int maxFps, bool metadataEnabled,
+                                       int maxFps, int maxWidth, bool metadataEnabled,
                                        bool videoEnabled)
     : device_(std::move(device)),
       jpegQuality_(std::clamp(jpegQuality, 1, 100)),
       maxFps_(std::max(1, maxFps)),
+      maxWidth_(std::clamp(maxWidth, 160, 1920)),
       metadataEnabled_(metadataEnabled), videoEnabled_(videoEnabled),
       worker_(&UsbStreamTransport::run, this)
 {
@@ -58,6 +60,10 @@ UsbStreamTransport::~UsbStreamTransport()
 void UsbStreamTransport::publish(const VisionFrame& frame, const cv::Mat& image)
 {
     std::lock_guard<std::mutex> lock(mutex_);
+    const auto now = std::chrono::steady_clock::now();
+    if (now < nextFrame_)
+        return;
+    nextFrame_ = now + std::chrono::milliseconds(1000 / maxFps_);
     pendingFrame_.metadata = frame;
     pendingFrame_.image = videoEnabled_ ? image.clone() : cv::Mat();
     hasPendingFrame_ = true;
@@ -136,8 +142,6 @@ std::string UsbStreamTransport::serializeMetadata(const VisionFrame& frame) cons
 
 void UsbStreamTransport::run()
 {
-    const auto minimumInterval = std::chrono::milliseconds(1000 / maxFps_);
-    auto nextFrame = std::chrono::steady_clock::now();
     while (true)
     {
         PendingFrame frame;
@@ -149,11 +153,6 @@ void UsbStreamTransport::run()
             frame = std::move(pendingFrame_);
             hasPendingFrame_ = false;
         }
-        const auto now = std::chrono::steady_clock::now();
-        if (now < nextFrame)
-            continue;
-        nextFrame = now + minimumInterval;
-
         if (metadataEnabled_)
         {
             const std::string json = serializeMetadata(frame.metadata);
@@ -162,8 +161,16 @@ void UsbStreamTransport::run()
         }
         if (videoEnabled_ && !frame.image.empty())
         {
+            cv::Mat encodedImage = frame.image;
+            if (frame.image.cols > maxWidth_)
+            {
+                const double scale = static_cast<double>(maxWidth_) / frame.image.cols;
+                cv::resize(frame.image, encodedImage,
+                           {maxWidth_, std::max(1, cvRound(frame.image.rows * scale))},
+                           0.0, 0.0, cv::INTER_AREA);
+            }
             std::vector<uint8_t> jpeg;
-            if (cv::imencode(".jpg", frame.image, jpeg,
+            if (cv::imencode(".jpg", encodedImage, jpeg,
                              {cv::IMWRITE_JPEG_QUALITY, jpegQuality_}))
                 writeRecord(kJpegMessage, frame.metadata.frameId,
                             jpeg.data(), jpeg.size());

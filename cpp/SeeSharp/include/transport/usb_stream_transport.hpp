@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -14,7 +15,7 @@
 class UsbStreamTransport
 {
 public:
-    UsbStreamTransport(std::string device, int jpegQuality, int maxFps,
+    UsbStreamTransport(std::string device, int jpegQuality, int maxFps, int maxWidth,
                        bool metadataEnabled, bool videoEnabled);
     ~UsbStreamTransport();
 
@@ -37,6 +38,7 @@ private:
     std::string device_;
     int jpegQuality_ = 80;
     int maxFps_ = 15;
+    int maxWidth_ = 960;
     bool metadataEnabled_ = true;
     bool videoEnabled_ = true;
     int deviceFd_ = -1;
@@ -46,4 +48,5 @@ private:
     std::mutex mutex_;
     std::condition_variable condition_;
     std::thread worker_;
+    std::chrono::steady_clock::time_point nextFrame_{};
 };

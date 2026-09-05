@@ -8,11 +8,14 @@
 
 #include "transport/vision_frame.hpp"
 
-class DxlUartTransport;
 class BinaryUartTransport;
 class UdpMetadataTransport;
-class UdpVideoTransport;
 class UsbStreamTransport;
+class WebSocketMetadataTransport;
+#ifdef RASPBERRY_CM5
+class DxlUartTransport;
+class UdpVideoTransport;
+#endif
 
 class TransportManager
 {
@@ -28,9 +31,14 @@ public:
     void publish(const VisionFrame& frame, const cv::Mat& image);
 
 private:
+#ifdef RASPBERRY_CM5
     std::unique_ptr<DxlUartTransport> uart_;
+#endif
     std::unique_ptr<BinaryUartTransport> binaryUart_;
     std::unique_ptr<UdpMetadataTransport> udp_;
-    std::unique_ptr<UdpVideoTransport> video_;
     std::unique_ptr<UsbStreamTransport> usb_;
+    std::unique_ptr<WebSocketMetadataTransport> websocket_;
+#ifdef RASPBERRY_CM5
+    std::unique_ptr<UdpVideoTransport> video_;
+#endif
 };

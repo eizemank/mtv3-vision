@@ -2,15 +2,21 @@
 
 #include <iostream>
 
-#include "transport/dxl_uart_transport.hpp"
 #include "transport/binary_uart_transport.hpp"
 #include "transport/udp_metadata_transport.hpp"
-#include "transport/udp_video_transport.hpp"
 #include "transport/usb_stream_transport.hpp"
+#include "transport/websocket_metadata_transport.hpp"
+#ifdef RASPBERRY_CM5
+#include "transport/dxl_uart_transport.hpp"
+#include "transport/udp_video_transport.hpp"
+#endif
 
 TransportManager::TransportManager(const nlohmann::json& config,
                                    DetectorCallback detectorCallback)
 {
+#ifndef RASPBERRY_CM5
+    (void)detectorCallback;
+#endif
     const nlohmann::json transports = config.value(
         "transports", nlohmann::json::object());
     const nlohmann::json udp = transports.value(
@@ -34,6 +40,21 @@ TransportManager::TransportManager(const nlohmann::json& config,
                   << udpFormat << " (supported: json)" << std::endl;
     }
 
+    const nlohmann::json websocket = transports.value(
+        "websocket_metadata", nlohmann::json::object());
+    if (websocket.value("enabled", false))
+    {
+        websocket_ = std::make_unique<WebSocketMetadataTransport>(
+            websocket.value("bind", "0.0.0.0"),
+            static_cast<uint16_t>(websocket.value("port", 5002)));
+        if (!websocket_->isOpen())
+        {
+            std::cerr << "WebSocket metadata transport is disabled: bind failed"
+                      << std::endl;
+            websocket_.reset();
+        }
+    }
+
     const nlohmann::json usb = transports.value(
         "usb_stream", nlohmann::json::object());
     if (usb.value("enabled", false))
@@ -41,9 +62,11 @@ TransportManager::TransportManager(const nlohmann::json& config,
         usb_ = std::make_unique<UsbStreamTransport>(
             usb.value("device", "/dev/ttyGS0"),
             usb.value("jpeg_quality", 80), usb.value("max_fps", 15),
-            usb.value("metadata", true), usb.value("video", true));
+            usb.value("max_width", 960), usb.value("metadata", true),
+            usb.value("video", true));
     }
 
+#ifdef RASPBERRY_CM5
     const nlohmann::json video = transports.value(
         "udp_video", nlohmann::json::object());
     if (video.value("enabled", false))
@@ -78,6 +101,7 @@ TransportManager::TransportManager(const nlohmann::json& config,
         if (!uart_->isOpen())
             uart_.reset();
     }
+#endif
 
     const nlohmann::json binaryUart = transports.value(
         "uart_binary", nlohmann::json::object());
@@ -96,14 +120,20 @@ TransportManager::~TransportManager() = default;
 
 void TransportManager::publish(const VisionFrame& frame, const cv::Mat& image)
 {
+#ifdef RASPBERRY_CM5
     if (uart_)
         uart_->publish(frame);
+#endif
     if (binaryUart_)
         binaryUart_->publish(frame);
     if (udp_)
         udp_->publish(frame);
-    if (video_)
-        video_->publish(frame.frameId, frame.timestampMs, image);
     if (usb_)
         usb_->publish(frame, image);
+    if (websocket_)
+        websocket_->publish(frame);
+#ifdef RASPBERRY_CM5
+    if (video_)
+        video_->publish(frame.frameId, frame.timestampMs, image);
+#endif
 }
