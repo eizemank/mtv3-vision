@@ -68,6 +68,9 @@ path = Path(sys.argv[1])
 config = json.loads(path.read_text())
 config["general_params"]["processing_mode"] = "circle_detection"
 config["general_params"]["debug_mode"] = True
+for transport in config.get("transports", {}).values():
+    if isinstance(transport, dict):
+        transport["enabled"] = False
 path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n")
 PY
 
