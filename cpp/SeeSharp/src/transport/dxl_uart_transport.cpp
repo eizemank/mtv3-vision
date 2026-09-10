@@ -192,6 +192,8 @@ bool DxlUartTransport::openPort()
     const speed_t speed = baudConstant(baud_);
     cfsetispeed(&tty, speed);
     cfsetospeed(&tty, speed);
+    // cfmakeraw does not clear inherited stop-bit/hardware-flow settings.
+    tty.c_cflag &= ~(CSTOPB | CRTSCTS);
     tty.c_cflag |= CLOCAL | CREAD;
     tty.c_cc[VMIN] = 0;
     tty.c_cc[VTIME] = 1;

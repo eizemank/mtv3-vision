@@ -174,8 +174,11 @@ designed for it.
 
 To enable the real 3.3 V UART on GPIO14/GPIO15 and remove the serial console
 from it, run `sudo sh board/raspberry-cm5/setup_uart.sh`, reboot, and use
-`/dev/serial0`. UART metadata output is enabled in the CM5 configuration by
-default.
+`/dev/ttyAMA0`. To select the DXL protocol from `uart_dxl_protocol_v21.md`,
+run `sudo python3 board/raspberry-cm5/configure_uart_dxl.py /opt/seesharp/config.json`
+and restart SeeSharp. Pass the build-directory config instead for manual runs.
+The shared default config selects the lightweight binary protocol; the helper
+switches it to DXL. See the [GPIO14/15 test guide](../../docs/UART_DXL_GPIO_RU.md).
 
 When opening the UI from another computer, `localhost` refers to that computer,
 not the CM5; use the CM5 IP address. Verify the local server with:

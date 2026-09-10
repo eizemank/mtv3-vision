@@ -162,7 +162,7 @@ reserved (`uint16` little-endian fields).
 `max_objects` is clamped to 1–20. Supported baud rates are 9600, 19200,
 38400, 57600, 115200 and, where available, 230400 bit/s.
 
-## UART Dynamixel Protocol 1.0 (legacy)
+## UART Dynamixel Protocol 1.0
 
 The implementation follows the agreed CM5 virtual-device protocol:
 
@@ -219,12 +219,25 @@ sudo sh board/raspberry-cm5/setup_uart.sh
 sudo reboot
 ```
 
-After reboot, verify the stable Raspberry Pi alias used by SeeSharp:
+On CM5 the script loads `uart0-pi5` for GPIO14/15. Use the explicit UART0
+device; `/dev/serial0` may point to the separate debug UART. After reboot:
 
 ```bash
-readlink -f /dev/serial0
-stty -F /dev/serial0 115200 raw -echo
+pinctrl get 14 15
+ls -l /dev/ttyAMA0
+sudo python3 board/raspberry-cm5/configure_uart_dxl.py /opt/seesharp/config.json
+sudo systemctl restart seesharp-cm5
 ```
+
+The helper enables DXL at 115200 8N1, ID 100, with automatic Push every
+33 ms when frames are available, and disables `uart_binary`. Pass the config
+actually used by `mainCV`. Existing settings are backed up as
+`config.json.before-uart-dxl`. A separate EEPROM file is used next to the
+config; subsequent writes to ID/baud persist in that file.
+
+See the [Russian wiring and PING/READ test guide](../../docs/UART_DXL_GPIO_RU.md).
+The overlay pin assignment is defined by the
+[Raspberry Pi overlay documentation](https://github.com/raspberrypi/firmware/blob/master/boot/overlays/README).
 
 For manual startup as a non-root user, add it to `dialout` once with
 `sudo usermod -aG dialout "$USER"` and log in again. The supplied systemd unit
