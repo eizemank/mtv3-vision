@@ -21,6 +21,7 @@
 #include "config/config_reader.hpp"
 #include "pipeline/pipeline.hpp"
 #include "processing/processing_manager.hpp"
+#include "transport/uart_rx_log.hpp"
 
 #if defined(MTV3_BOARD) || defined(RASPBERRY_CM5)
 #include "system/system_admin.hpp"
@@ -313,6 +314,13 @@ details details>summary{font-weight:normal;color:#9bd}
 <button id="applyButton" onclick="send('/apply')">Применить (до перезапуска)</button>
 <button id="saveButton" onclick="send('/config')">Сохранить (постоянно)</button>
 <button id="revertButton" onclick="revert()">Откатить к сохранённому</button><span id="st"></span>
+<details id="uartLogPanel"><summary>UART RX log / Журнал приёма UART</summary>
+<p>CM5 RX ← controller TX. BYTES: raw data; PACKET: DXL command. Last 100 entries.</p>
+<button id="uartLogPause" onclick="uartLogPaused=!uartLogPaused;this.textContent=uartLogPaused?'Resume / Продолжить':'Pause / Пауза'">Pause / Пауза</button>
+<label><input id="uartLogRaw" type="checkbox">Show raw bytes / Показать байты</label>
+<div id="uartLogStatus" role="status"></div>
+<pre id="uartLogOutput" style="max-height:360px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere"></pre>
+</details>
 <details><summary id="adminTitle">System administration</summary><div class="body">
 <div class="row"><label>Admin token</label><input id="admToken" type="password"></div>
 <button onclick="adminGet('status')">System status</button>
@@ -713,6 +721,28 @@ function adminPost(body){fetch('/admin',{method:'POST',headers:admHeaders(),body
   .then(r=>r.text()).then(adminShow);}
 function adminNetwork(){try{adminPost(JSON.parse(admNet.value));}catch(e){adminShow(e.message);}}
 load();
+let uartLogPaused=false;
+async function pollUartLog(){
+  const panel=document.getElementById('uartLogPanel');
+  try {
+    if(panel.open&&!uartLogPaused){
+      const response=await fetch('/uart/rx-log',{cache:'no-store'});
+      if(!response.ok)throw new Error('HTTP '+response.status);
+      const log=await response.json();
+      document.getElementById('uartLogStatus').textContent=
+        `${log.state} ${log.device} | RX bytes=${log.bytes}, packets=${log.packets}`;
+      const raw=document.getElementById('uartLogRaw').checked;
+      const out=document.getElementById('uartLogOutput');
+      const atBottom=out.scrollHeight-out.scrollTop-out.clientHeight<30;
+      out.textContent=log.entries.filter(e=>raw||e.kind==='PACKET').map(e=>
+        `${new Date(e.time_ms).toLocaleTimeString()}.${String(e.time_ms%1000).padStart(3,'0')} #${e.sequence} ${e.kind} ${e.detail}\n${e.hex}`
+      ).join('\n')||'No received packets / Нет принятых пакетов';
+      if(atBottom)out.scrollTop=out.scrollHeight;
+    }
+  }catch(error){document.getElementById('uartLogStatus').textContent='UART log: '+error.message;}
+  finally{setTimeout(pollUartLog,1000);}
+}
+pollUartLog();
 </script></body></html>)HTML";
 
 static bool sendAll(int socketFd, const char* data, size_t size)
@@ -1017,6 +1047,17 @@ static void controlServer(int port)
                 sendResp(c, "image/jpeg", jpeg);
             else
                 sendResp(c, "text/plain", "source is not ready\n");
+        }
+        else if (req.compare(0, 17, "GET /uart/rx-log ") == 0)
+        {
+            const auto snapshot = UartRxLog::instance().snapshot();
+            nlohmann::json entries = nlohmann::json::array();
+            for (const auto& entry : snapshot.entries)
+                entries.push_back({{"sequence", entry.sequence}, {"time_ms", entry.timeMs},
+                    {"kind", entry.kind}, {"detail", entry.detail}, {"hex", entry.hex}});
+            nlohmann::json body = {{"state", snapshot.state}, {"device", snapshot.device},
+                {"bytes", snapshot.bytes}, {"packets", snapshot.packets}, {"entries", entries}};
+            sendResp(c, "application/json", body.dump());
         }
         else if (req.compare(0, 12, "GET /config ") == 0)
         {

@@ -1,4 +1,5 @@
 #include "transport/dxl_uart_transport.hpp"
+#include "transport/uart_rx_log.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -120,8 +121,14 @@ DxlUartTransport::DxlUartTransport(std::string device, int baud,
     table_[0x14] = std::max<uint8_t>(1, pushIntervalMs);
     loadEeprom();
     baud_ = baudFromIndex(table_[0x04]);
+    UartRxLog::instance().state("Opening DXL UART", device_);
     if (openPort())
+    {
+        UartRxLog::instance().state("DXL RX active", device_);
         worker_ = std::thread(&DxlUartTransport::run, this);
+    }
+    else
+        UartRxLog::instance().state("Failed to open/configure DXL UART", device_);
 }
 
 void DxlUartTransport::loadEeprom()
@@ -148,7 +155,10 @@ DxlUartTransport::~DxlUartTransport()
     if (worker_.joinable())
         worker_.join();
     if (serialFd_ >= 0)
+    {
         close(serialFd_);
+        UartRxLog::instance().state("DXL RX stopped", device_);
+    }
 }
 
 void DxlUartTransport::initializeControlTable(uint8_t deviceId, int baud)
@@ -398,6 +408,29 @@ void DxlUartTransport::processPacket(const std::vector<uint8_t>& packet)
 {
     if (packet.size() < 6)
         return;
+    const bool validChecksum = packet.back() == checksum(packet.data() + 2, packet.size() - 3);
+    const char* command = "UNKNOWN";
+    switch (packet[4]) {
+        case 1: command = "PING"; break;
+        case 2: command = "READ"; break;
+        case 3: command = "WRITE"; break;
+        case 4: command = "REG_WRITE"; break;
+        case 5: command = "ACTION"; break;
+        case 6: command = "FACTORY_RESET"; break;
+        case 8: command = "REBOOT"; break;
+    }
+    std::string detail = "ID=" + std::to_string(packet[2]) + " " + command;
+    if ((packet[4] == 2 || packet[4] == 3 || packet[4] == 4) && packet.size() >= 8)
+        detail += " address=" + std::to_string(packet[5]) +
+            (packet[4] == 2 ? " length=" : " value[0]=") + std::to_string(packet[6]);
+    detail += validChecksum ? " checksum=OK" : " checksum=ERROR";
+    if (packet == lastTransmit_) detail += " echo ignored";
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (packet[2] != table_[0x03] && packet[2] != kBroadcastId)
+            detail += " foreign ID ignored";
+    }
+    UartRxLog::instance().record(packet.data(), packet.size(), true, detail);
     if (packet == lastTransmit_)
     {
         lastTransmit_.clear();
@@ -513,7 +546,10 @@ void DxlUartTransport::run()
         uint8_t chunk[128];
         const ssize_t count = read(serialFd_, chunk, sizeof(chunk));
         if (count > 0)
+        {
+            UartRxLog::instance().record(chunk, static_cast<size_t>(count), false, "Raw RX chunk");
             buffer.insert(buffer.end(), chunk, chunk + count);
+        }
 
         while (buffer.size() >= 6)
         {
