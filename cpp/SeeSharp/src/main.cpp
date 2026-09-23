@@ -317,16 +317,16 @@ details details>summary{font-weight:normal;color:#9bd}
 <button id="revertButton" onclick="revert()">Откатить к сохранённому</button><span id="st"></span>
 <details id="uartLogPanel"><summary>UART RX log / Журнал приёма UART</summary>
 <p>CM5 RX ← controller TX. BYTES: raw data; PACKET: DXL command. Last 100 entries.</p>
-<button id="uartLogPause" onclick="uartLogPaused=!uartLogPaused;this.textContent=uartLogPaused?'Resume / Продолжить':'Pause / Пауза'">Pause / Пауза</button>
+<button id="uartLogPause">Pause / Пауза</button>
 <label><input id="uartLogRaw" type="checkbox">Show raw bytes / Показать байты</label>
-<div id="uartLogStatus" role="status"></div>
+<div id="uartLogStatus" role="status">Откройте журнал для загрузки / Open log to load</div>
 <pre id="uartLogOutput" style="max-height:360px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere"></pre>
 </details>
 <details id="uartTxLogPanel"><summary>UART TX log / Журнал передачи UART</summary>
 <p>UART TX → controller RX. BYTES: written data; PACKET: DXL response or binary frame. Last 100 entries.</p>
-<button id="uartTxLogPause" onclick="uartTxLogPaused=!uartTxLogPaused;this.textContent=uartTxLogPaused?'Resume / Продолжить':'Pause / Пауза'">Pause / Пауза</button>
+<button id="uartTxLogPause">Pause / Пауза</button>
 <label><input id="uartTxLogRaw" type="checkbox">Show raw bytes / Показать байты</label>
-<div id="uartTxLogStatus" role="status"></div>
+<div id="uartTxLogStatus" role="status">Откройте журнал для загрузки / Open log to load</div>
 <pre id="uartTxLogOutput" style="max-height:360px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere"></pre>
 </details>
 <details><summary id="adminTitle">System administration</summary><div class="body">
@@ -349,6 +349,58 @@ details details>summary{font-weight:normal;color:#9bd}
 <button onclick="adminPost({op:'terminal',command:document.getElementById('admCmd').value})">Execute</button>
 <textarea id="admOut" spellcheck="false"></textarea>
 </div></details>
+<script>
+// Keep UART diagnostics independent of video, canvas and configuration setup.
+function setupUartLog(prefix,direction){
+  const panel=document.getElementById(prefix+'Panel');
+  const status=document.getElementById(prefix+'Status');
+  const out=document.getElementById(prefix+'Output');
+  const pause=document.getElementById(prefix+'Pause');
+  const raw=document.getElementById(prefix+'Raw');
+  let paused=false,busy=false,timer=null,lastLog=null;
+  function renderLog(log){
+    status.textContent=`${log.state} ${log.device} | ${direction} bytes=${log.bytes}, packets=${log.packets}`;
+    const atBottom=out.scrollHeight-out.scrollTop-out.clientHeight<30;
+    out.textContent=log.entries.filter(e=>raw.checked||e.kind==='PACKET').map(e=>
+      `${new Date(e.time_ms).toLocaleTimeString()}.${String(e.time_ms%1000).padStart(3,'0')} #${e.sequence} ${e.kind} ${e.detail}\n${e.hex}`
+    ).join('\n')||(direction==='TX'?'No transmitted packets / Нет переданных пакетов':'No received packets / Нет принятых пакетов');
+    if(atBottom)out.scrollTop=out.scrollHeight;
+  }
+  async function poll(){
+    if(busy)return;
+    clearTimeout(timer);
+    if(!panel.open||paused)return;
+    busy=true;
+    if(!lastLog)status.textContent='Loading UART '+direction+' / Загрузка…';
+    const controller=new AbortController();
+    const timeout=setTimeout(()=>controller.abort(),5000);
+    try{
+      const response=await fetch('/uart/'+direction.toLowerCase()+'-log',{cache:'no-store',signal:controller.signal});
+      if(!response.ok)throw new Error('HTTP '+response.status);
+      const log=await response.json();
+      if(!Array.isArray(log.entries))throw new Error('Invalid UART log response');
+      lastLog=log;
+      if(!paused)renderLog(log);
+    }catch(error){
+      status.textContent='UART '+direction+': '+(error.name==='AbortError'?'Request timed out / Сервер не ответил за 5 секунд':error.message);
+    }finally{
+      clearTimeout(timeout);
+      busy=false;
+      if(panel.open&&!paused)timer=setTimeout(poll,1000);
+    }
+  }
+  panel.addEventListener('toggle',poll);
+  pause.addEventListener('click',()=>{
+    paused=!paused;
+    pause.textContent=paused?'Resume / Продолжить':'Pause / Пауза';
+    if(paused)clearTimeout(timer);else poll();
+  });
+  raw.addEventListener('change',()=>{if(lastLog)renderLog(lastLog);});
+  poll();
+}
+setupUartLog('uartLog','RX');
+setupUartLog('uartTxLog','TX');
+</script>
 <script>
 const modes=['off','aruco_detection','object_detection','blob_detection','line_detection','circle_detection'];
 let language='ru';
@@ -729,50 +781,6 @@ function adminPost(body){fetch('/admin',{method:'POST',headers:admHeaders(),body
   .then(r=>r.text()).then(adminShow);}
 function adminNetwork(){try{adminPost(JSON.parse(admNet.value));}catch(e){adminShow(e.message);}}
 load();
-let uartLogPaused=false;
-async function pollUartLog(){
-  const panel=document.getElementById('uartLogPanel');
-  try {
-    if(panel.open&&!uartLogPaused){
-      const response=await fetch('/uart/rx-log',{cache:'no-store'});
-      if(!response.ok)throw new Error('HTTP '+response.status);
-      const log=await response.json();
-      document.getElementById('uartLogStatus').textContent=
-        `${log.state} ${log.device} | RX bytes=${log.bytes}, packets=${log.packets}`;
-      const raw=document.getElementById('uartLogRaw').checked;
-      const out=document.getElementById('uartLogOutput');
-      const atBottom=out.scrollHeight-out.scrollTop-out.clientHeight<30;
-      out.textContent=log.entries.filter(e=>raw||e.kind==='PACKET').map(e=>
-        `${new Date(e.time_ms).toLocaleTimeString()}.${String(e.time_ms%1000).padStart(3,'0')} #${e.sequence} ${e.kind} ${e.detail}\n${e.hex}`
-      ).join('\n')||'No received packets / Нет принятых пакетов';
-      if(atBottom)out.scrollTop=out.scrollHeight;
-    }
-  }catch(error){document.getElementById('uartLogStatus').textContent='UART log: '+error.message;}
-  finally{setTimeout(pollUartLog,1000);}
-}
-pollUartLog();
-let uartTxLogPaused=false;
-async function pollUartTxLog(){
-  const panel=document.getElementById('uartTxLogPanel');
-  try {
-    if(panel.open&&!uartTxLogPaused){
-      const response=await fetch('/uart/tx-log',{cache:'no-store'});
-      if(!response.ok)throw new Error('HTTP '+response.status);
-      const log=await response.json();
-      document.getElementById('uartTxLogStatus').textContent=
-        `${log.state} ${log.device} | TX bytes=${log.bytes}, packets=${log.packets}`;
-      const raw=document.getElementById('uartTxLogRaw').checked;
-      const out=document.getElementById('uartTxLogOutput');
-      const atBottom=out.scrollHeight-out.scrollTop-out.clientHeight<30;
-      out.textContent=log.entries.filter(e=>raw||e.kind==='PACKET').map(e=>
-        `${new Date(e.time_ms).toLocaleTimeString()}.${String(e.time_ms%1000).padStart(3,'0')} #${e.sequence} ${e.kind} ${e.detail}\n${e.hex}`
-      ).join('\n')||'No transmitted packets / Нет переданных пакетов';
-      if(atBottom)out.scrollTop=out.scrollHeight;
-    }
-  }catch(error){document.getElementById('uartTxLogStatus').textContent='UART log: '+error.message;}
-  finally{setTimeout(pollUartTxLog,1000);}
-}
-pollUartTxLog();
 </script></body></html>)HTML";
 
 static bool sendAll(int socketFd, const char* data, size_t size)
