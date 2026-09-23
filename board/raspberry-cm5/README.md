@@ -195,22 +195,67 @@ sensor. SeeSharp automatically reopens the V4L2 stream after a read timeout.
 
 ## Autostart
 
-Install the binary, config and optional ONNX model, then enable the supplied
-systemd unit:
+### Сборка, установка и обновление seesharp-cm5.service
+
+Выполняйте команды на CM5. Предполагается, что репозиторий находится в
+`~/mtv3-vision`. Установите зависимости и соберите приложение:
 
 ```bash
-sudo install -d /opt/seesharp /tmp/seesharp
-sudo install -m 0755 build-cm5/mainCV /opt/seesharp/mainCV
-sudo install -m 0644 build-cm5/config.json /opt/seesharp/config.json
-sudo install -m 0644 build-cm5/yolo11n.onnx /opt/seesharp/yolo11n.onnx
-sudo install -m 0644 build-cm5/coco.names /opt/seesharp/coco.names
-sudo install -m 0644 ~/mtv3-vision/board/raspberry-cm5/systemd/seesharp-cm5.service /etc/systemd/system/seesharp-cm5.service
-sudo install -m 0755 ~/mtv3-vision/board/raspberry-cm5/check_boot_sla.sh /usr/local/bin/check-seesharp-boot
-sudo systemctl daemon-reload
-sudo systemctl disable seesharp-cm5 2>/dev/null || true
-sudo systemctl enable --now seesharp-cm5
-journalctl -u seesharp-cm5 -f
+sudo apt update
+sudo apt install -y build-essential cmake pkg-config libopencv-dev \
+    nlohmann-json3-dev libcamera-tools libcamera-v4l2 python3 curl
+
+cd ~/mtv3-vision
+cmake -S cpp/SeeSharp -B cpp/SeeSharp/build-cm5 \
+    -DRASPBERRY_CM5=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build cpp/SeeSharp/build-cm5 -j"$(nproc)"
 ```
+
+Установите бинарный файл и unit, затем перезапустите сервис. Существующий
+`/opt/seesharp/config.json` сохраняется; при первой установке копируется
+конфиг из каталога сборки. При первой установке ошибка `stop` о несуществующем
+сервисе допустима.
+
+```bash
+cd ~/mtv3-vision
+sudo systemctl stop seesharp-cm5.service
+sudo install -d /opt/seesharp /tmp/seesharp
+sudo install -m 0755 cpp/SeeSharp/build-cm5/mainCV /opt/seesharp/mainCV
+
+if ! sudo test -f /opt/seesharp/config.json; then
+    sudo install -m 0644 cpp/SeeSharp/build-cm5/config.json /opt/seesharp/config.json
+fi
+
+sudo install -m 0644 board/raspberry-cm5/systemd/seesharp-cm5.service \
+    /etc/systemd/system/seesharp-cm5.service
+sudo install -m 0755 board/raspberry-cm5/check_boot_sla.sh \
+    /usr/local/bin/check-seesharp-boot
+sudo systemctl daemon-reload
+sudo systemctl enable seesharp-cm5.service
+sudo systemctl restart seesharp-cm5.service
+```
+
+Если используется YOLO, отдельно установите ранее скачанные модель и метки:
+
+```bash
+cd ~/mtv3-vision
+sudo install -m 0644 cpp/SeeSharp/build-cm5/yolo11n.onnx /opt/seesharp/yolo11n.onnx
+sudo install -m 0644 cpp/SeeSharp/build-cm5/coco.names /opt/seesharp/coco.names
+sudo systemctl restart seesharp-cm5.service
+```
+
+Скачивание модели описано в разделе Build. Установка этих файлов сохраняет
+выбранный режим обработки в `/opt/seesharp/config.json`.
+
+Проверка состояния и просмотр журнала:
+
+```bash
+systemctl status seesharp-cm5.service --no-pager
+journalctl -u seesharp-cm5.service -n 100 -f
+```
+
+GUI доступен по адресу `http://<IP-CM5>:8081`. Поставляемый unit запускает
+CSI-камеру через `libcamerify`.
 
 ### 12-second boot requirement
 
