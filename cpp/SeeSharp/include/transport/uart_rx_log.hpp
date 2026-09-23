@@ -55,9 +55,13 @@ public:
         return {state_, device_, bytes_, packets_, {entries_.begin(), entries_.end()}};
     }
 
+protected:
+    explicit UartRxLog(const std::string& initialState = "DXL RX disabled or unavailable in this build")
+        : state_(initialState) {}
+
 private:
     std::mutex mutex_;
-    std::string state_ = "DXL RX disabled or unavailable in this build", device_;
+    std::string state_, device_;
     uint64_t bytes_ = 0, packets_ = 0, sequence_ = 0;
     std::deque<Entry> entries_;
 };

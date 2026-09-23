@@ -1,5 +1,6 @@
 #include "transport/dxl_uart_transport.hpp"
 #include "transport/uart_rx_log.hpp"
+#include "transport/uart_tx_log.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -122,13 +123,18 @@ DxlUartTransport::DxlUartTransport(std::string device, int baud,
     loadEeprom();
     baud_ = baudFromIndex(table_[0x04]);
     UartRxLog::instance().state("Opening DXL UART", device_);
+    UartTxLog::instance().state("Opening DXL UART", device_);
     if (openPort())
     {
         UartRxLog::instance().state("DXL RX active", device_);
+        UartTxLog::instance().state("DXL TX active", device_);
         worker_ = std::thread(&DxlUartTransport::run, this);
     }
     else
+    {
         UartRxLog::instance().state("Failed to open/configure DXL UART", device_);
+        UartTxLog::instance().state("Failed to open/configure DXL UART", device_);
+    }
 }
 
 void DxlUartTransport::loadEeprom()
@@ -158,6 +164,7 @@ DxlUartTransport::~DxlUartTransport()
     {
         close(serialFd_);
         UartRxLog::instance().state("DXL RX stopped", device_);
+        UartTxLog::instance().state("DXL TX stopped", device_);
     }
 }
 
@@ -340,12 +347,24 @@ bool DxlUartTransport::writeAll(const std::vector<uint8_t>& packet)
         const ssize_t written = write(serialFd_, packet.data() + offset,
                                       packet.size() - offset);
         if (written > 0)
+        {
+            UartTxLog::instance().record(packet.data() + offset,
+                static_cast<size_t>(written), false, "Raw TX chunk");
             offset += static_cast<size_t>(written);
+        }
         else if (written < 0 && (errno == EAGAIN || errno == EINTR))
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         else
+        {
+            UartTxLog::instance().state("DXL TX write failed", device_);
             return false;
+        }
     }
+    UartTxLog::instance().state("DXL TX active", device_);
+    UartTxLog::instance().record(packet.data(), packet.size(), true,
+        "DXL STATUS ID=" + std::to_string(packet[2]) +
+        " error=" + std::to_string(packet[4]) +
+        " params=" + std::to_string(packet.size() - 6));
     tcdrain(serialFd_);
     return true;
 }

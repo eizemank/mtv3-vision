@@ -22,6 +22,7 @@
 #include "pipeline/pipeline.hpp"
 #include "processing/processing_manager.hpp"
 #include "transport/uart_rx_log.hpp"
+#include "transport/uart_tx_log.hpp"
 
 #if defined(MTV3_BOARD) || defined(RASPBERRY_CM5)
 #include "system/system_admin.hpp"
@@ -320,6 +321,13 @@ details details>summary{font-weight:normal;color:#9bd}
 <label><input id="uartLogRaw" type="checkbox">Show raw bytes / Показать байты</label>
 <div id="uartLogStatus" role="status"></div>
 <pre id="uartLogOutput" style="max-height:360px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere"></pre>
+</details>
+<details id="uartTxLogPanel"><summary>UART TX log / Журнал передачи UART</summary>
+<p>UART TX → controller RX. BYTES: written data; PACKET: DXL response or binary frame. Last 100 entries.</p>
+<button id="uartTxLogPause" onclick="uartTxLogPaused=!uartTxLogPaused;this.textContent=uartTxLogPaused?'Resume / Продолжить':'Pause / Пауза'">Pause / Пауза</button>
+<label><input id="uartTxLogRaw" type="checkbox">Show raw bytes / Показать байты</label>
+<div id="uartTxLogStatus" role="status"></div>
+<pre id="uartTxLogOutput" style="max-height:360px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere"></pre>
 </details>
 <details><summary id="adminTitle">System administration</summary><div class="body">
 <div class="row"><label>Admin token</label><input id="admToken" type="password"></div>
@@ -743,6 +751,28 @@ async function pollUartLog(){
   finally{setTimeout(pollUartLog,1000);}
 }
 pollUartLog();
+let uartTxLogPaused=false;
+async function pollUartTxLog(){
+  const panel=document.getElementById('uartTxLogPanel');
+  try {
+    if(panel.open&&!uartTxLogPaused){
+      const response=await fetch('/uart/tx-log',{cache:'no-store'});
+      if(!response.ok)throw new Error('HTTP '+response.status);
+      const log=await response.json();
+      document.getElementById('uartTxLogStatus').textContent=
+        `${log.state} ${log.device} | TX bytes=${log.bytes}, packets=${log.packets}`;
+      const raw=document.getElementById('uartTxLogRaw').checked;
+      const out=document.getElementById('uartTxLogOutput');
+      const atBottom=out.scrollHeight-out.scrollTop-out.clientHeight<30;
+      out.textContent=log.entries.filter(e=>raw||e.kind==='PACKET').map(e=>
+        `${new Date(e.time_ms).toLocaleTimeString()}.${String(e.time_ms%1000).padStart(3,'0')} #${e.sequence} ${e.kind} ${e.detail}\n${e.hex}`
+      ).join('\n')||'No transmitted packets / Нет переданных пакетов';
+      if(atBottom)out.scrollTop=out.scrollHeight;
+    }
+  }catch(error){document.getElementById('uartTxLogStatus').textContent='UART log: '+error.message;}
+  finally{setTimeout(pollUartTxLog,1000);}
+}
+pollUartTxLog();
 </script></body></html>)HTML";
 
 static bool sendAll(int socketFd, const char* data, size_t size)
@@ -1048,9 +1078,11 @@ static void controlServer(int port)
             else
                 sendResp(c, "text/plain", "source is not ready\n");
         }
-        else if (req.compare(0, 17, "GET /uart/rx-log ") == 0)
+        else if (req.compare(0, 16, "GET /uart/rx-log ") == 0 ||
+                 req.compare(0, 16, "GET /uart/tx-log ") == 0)
         {
-            const auto snapshot = UartRxLog::instance().snapshot();
+            const auto snapshot = req.compare(0, 16, "GET /uart/tx-log ") == 0
+                ? UartTxLog::instance().snapshot() : UartRxLog::instance().snapshot();
             nlohmann::json entries = nlohmann::json::array();
             for (const auto& entry : snapshot.entries)
                 entries.push_back({{"sequence", entry.sequence}, {"time_ms", entry.timeMs},

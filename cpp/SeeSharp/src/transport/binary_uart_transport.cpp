@@ -1,4 +1,7 @@
 #include "transport/binary_uart_transport.hpp"
+#include "transport/uart_tx_log.hpp"
+
+#include <cerrno>
 
 #include <algorithm>
 #include <cmath>
@@ -77,8 +80,14 @@ BinaryUartTransport::BinaryUartTransport(std::string device, int baud,
     : device_(std::move(device)), baud_(baud),
       maxObjects_(std::clamp<size_t>(maxObjects, 1, 20))
 {
+    UartTxLog::instance().state("Opening binary UART", device_);
     if (openPort())
+    {
+        UartTxLog::instance().state("Binary TX active", device_);
         worker_ = std::thread(&BinaryUartTransport::run, this);
+    }
+    else
+        UartTxLog::instance().state("Failed to open/configure binary UART", device_);
 }
 
 BinaryUartTransport::~BinaryUartTransport()
@@ -86,7 +95,10 @@ BinaryUartTransport::~BinaryUartTransport()
     running_ = false;
     ready_.notify_all();
     if (worker_.joinable())
+    {
         worker_.join();
+        UartTxLog::instance().state("Binary TX stopped", device_);
+    }
     if (fd_ >= 0)
         close(fd_);
 }
@@ -178,8 +190,20 @@ void BinaryUartTransport::sendFrame(const VisionFrame& frame)
     {
         const ssize_t written = write(fd_, packet.data() + offset,
                                       packet.size() - offset);
+        if (written < 0 && errno == EINTR)
+            continue;
         if (written <= 0)
+        {
+            UartTxLog::instance().state("Binary TX write failed", device_);
             return;
+        }
+        UartTxLog::instance().record(packet.data() + offset,
+            static_cast<size_t>(written), false, "Raw TX chunk");
         offset += static_cast<size_t>(written);
     }
+    UartTxLog::instance().state("Binary TX active", device_);
+    UartTxLog::instance().record(packet.data(), packet.size(), true,
+        "BINARY message=" + std::to_string(id) +
+        " frame=" + std::to_string(frame.frameId) +
+        " objects=" + std::to_string(count));
 }
