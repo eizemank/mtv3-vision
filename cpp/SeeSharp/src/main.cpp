@@ -289,6 +289,8 @@ details details>summary{font-weight:normal;color:#9bd}
 .row label{flex:0 0 260px;color:#bbb;font-size:13px;cursor:help}
 .row input[type=text],.row input[type=number]{background:#222;color:#eee;border:1px solid #555;padding:3px 6px;width:190px}
 .row input[type=color]{width:38px;height:28px;padding:1px;border:1px solid #555;background:#222;cursor:pointer}
+.blobColorRow{flex-wrap:wrap}.blobColorEditor{flex:1 0 100%;display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:8px;box-sizing:border-box;background:#202020}
+.blobColorEditor label{flex:initial;display:flex;align-items:center;gap:4px}.blobColorEditor input[type=number]{width:70px}.blobColorEditor canvas{width:180px;height:180px;touch-action:none;cursor:crosshair}.blobColorEditor select{background:#222;color:#eee;padding:5px}.blobColorChannels{display:flex;flex-wrap:wrap;gap:8px}.blobColorEditor .hint{flex-basis:100%;color:#aaa}
 .row input:focus{border-color:#7a7;outline:none}
 .hint{color:#666;font-size:12px}
 .linkedEditor{border:1px solid #475847;background:#141a14;padding:10px;margin:8px 0}
@@ -575,25 +577,10 @@ function pathInput(path){
   const encoded=JSON.stringify(path);
   return [...document.querySelectorAll('[data-path]')].find(e=>e.dataset.path===encoded);
 }
-function addBlobColorPicker(row,path,lower){
-  if(path.length<4||path[0]!=='blob_detection'||path[1]!=='one_color_patterns'||path[path.length-1]!=='lower_range')return;
-  const upperPath=path.slice(); upperPath[upperPath.length-1]='upper_range';
-  const configuredUpper=cfgObj.blob_detection.one_color_patterns[path[2]].upper_range;
-  const center=lower.map((value,index)=>(value+configuredUpper[index])/2);
-  const caption=el('span','hint'); caption.textContent='Color'; row.appendChild(caption);
-  const picker=el('input'); picker.type='color'; picker.value=yCrCbToHex(center);
-  picker.title='Select the target blob color. The current YCrCb tolerance width is preserved.';
-  picker.oninput=()=>{
-    const lowerInput=pathInput(path),upperInput=pathInput(upperPath);
-    if(!lowerInput||!upperInput)return;
-    const low=lowerInput.value.split(',').map(Number),high=upperInput.value.split(',').map(Number);
-    const half=[0,1,2].map(index=>Math.max(1,(high[index]-low[index])/2));
-    const selected=hexToYCrCb(picker.value);
-    lowerInput.value=selected.map((value,index)=>clampByte(value-half[index])).join(', ');
-    upperInput.value=selected.map((value,index)=>clampByte(value+half[index])).join(', ');
-  };
-  row.appendChild(picker);
-}
+)HTML"
+#include "web/vendor/hsluv/hsluv_js.hpp"
+#include "web/blob_color_picker_js.hpp"
+R"HTML(
 function fieldRow(key,val,path){
   const r=el('div','row'), l=el('label'); l.textContent=contextualFieldLabel(key,path); l.title=fieldHint(key)+' JSON key: '+key; r.appendChild(l);
   let i=el('input');
