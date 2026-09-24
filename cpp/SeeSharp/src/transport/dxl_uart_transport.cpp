@@ -1,4 +1,5 @@
 #include "transport/dxl_uart_transport.hpp"
+#include "transport/dxl_packet_parser.hpp"
 #include "transport/uart_rx_log.hpp"
 #include "transport/uart_tx_log.hpp"
 
@@ -80,7 +81,7 @@ speed_t baudConstant(int baud)
 #endif
         case 500000: return B500000;
         case 1000000: return B1000000;
-        default: return B115200;
+        default: return 0;
     }
 }
 
@@ -88,6 +89,18 @@ uint8_t baudIndex(int baud)
 {
     const int index = std::max(0, 2000000 / std::max(1, baud) - 1);
     return clampCast<uint8_t>(index);
+}
+
+std::string errnoText(const char* call)
+{
+    return std::string(call) + ": " + std::strerror(errno);
+}
+
+void dxlError(const std::string& message)
+{
+    std::cerr << message << std::endl;
+    UartRxLog::instance().event("ERROR", message);
+    UartTxLog::instance().event("ERROR", message);
 }
 
 int baudFromIndex(uint8_t index)
@@ -122,12 +135,25 @@ DxlUartTransport::DxlUartTransport(std::string device, int baud,
     table_[0x14] = std::max<uint8_t>(1, pushIntervalMs);
     loadEeprom();
     baud_ = baudFromIndex(table_[0x04]);
-    UartRxLog::instance().state("Opening DXL UART", device_);
-    UartTxLog::instance().state("Opening DXL UART", device_);
+    // EEPROM (и таблица DXL в целом) главнее config.json: контроллер мог
+    // сменить скорость записью в 0x04, и она переживает перезапуск
+    if (baud_ != baud)
+    {
+        const std::string warning = "[DXL] baud " + std::to_string(baud_) +
+            " from " + eepromPath_ + " / DXL table overrides config baud " +
+            std::to_string(baud);
+        std::cerr << warning << std::endl;
+        UartRxLog::instance().event("WARN", warning);
+        UartTxLog::instance().event("WARN", warning);
+    }
+    const std::string at = " @ " + std::to_string(baud_) +
+                           " ID=" + std::to_string(table_[0x03]);
+    UartRxLog::instance().state("Opening DXL UART" + at, device_);
+    UartTxLog::instance().state("Opening DXL UART" + at, device_);
     if (openPort())
     {
-        UartRxLog::instance().state("DXL RX active", device_);
-        UartTxLog::instance().state("DXL TX active", device_);
+        UartRxLog::instance().state("DXL RX active" + at, device_);
+        UartTxLog::instance().state("DXL TX active" + at, device_);
         worker_ = std::thread(&DxlUartTransport::run, this);
     }
     else
@@ -191,22 +217,29 @@ void DxlUartTransport::initializeControlTable(uint8_t deviceId, int baud)
 
 bool DxlUartTransport::openPort()
 {
+    const speed_t speed = baudConstant(baud_);
+    if (!speed)
+    {
+        dxlError("[DXL] " + device_ + ": baud " + std::to_string(baud_) +
+                 " is not supported by this kernel/libc");
+        return false;
+    }
     serialFd_ = open(device_.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
     if (serialFd_ < 0)
     {
-        std::cerr << "UART: can't open " << device_ << std::endl;
+        dxlError("[DXL] " + device_ + ": " + errnoText("open"));
         return false;
     }
 
     termios tty{};
     if (tcgetattr(serialFd_, &tty) != 0)
     {
+        dxlError("[DXL] " + device_ + ": " + errnoText("tcgetattr"));
         close(serialFd_);
         serialFd_ = -1;
         return false;
     }
     cfmakeraw(&tty);
-    const speed_t speed = baudConstant(baud_);
     cfsetispeed(&tty, speed);
     cfsetospeed(&tty, speed);
     // cfmakeraw does not clear inherited stop-bit/hardware-flow settings.
@@ -216,6 +249,7 @@ bool DxlUartTransport::openPort()
     tty.c_cc[VTIME] = 1;
     if (tcsetattr(serialFd_, TCSANOW, &tty) != 0)
     {
+        dxlError("[DXL] " + device_ + ": " + errnoText("tcsetattr"));
         close(serialFd_);
         serialFd_ = -1;
         return false;
@@ -226,7 +260,12 @@ bool DxlUartTransport::openPort()
         serial_rs485 config{};
         config.flags = SER_RS485_ENABLED | SER_RS485_RTS_ON_SEND;
         if (ioctl(serialFd_, TIOCSRS485, &config) != 0)
-            std::cerr << "UART: RS-485 direction ioctl is not supported" << std::endl;
+        {
+            const std::string warning = "[DXL] RS-485 direction ioctl is not supported: " +
+                                        errnoText("ioctl(TIOCSRS485)");
+            std::cerr << warning << std::endl;
+            UartTxLog::instance().event("WARN", warning);
+        }
     }
     std::cout << "UART DXL 1.0: " << device_ << " @ " << baud_ << std::endl;
     return true;
@@ -349,20 +388,24 @@ bool DxlUartTransport::writeAll(const std::vector<uint8_t>& packet)
         if (written > 0)
         {
             UartTxLog::instance().record(packet.data() + offset,
-                static_cast<size_t>(written), false, "Raw TX chunk");
+                static_cast<size_t>(written), false, "[DXL] Raw TX chunk");
             offset += static_cast<size_t>(written);
         }
         else if (written < 0 && (errno == EAGAIN || errno == EINTR))
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         else
         {
+            UartTxLog::instance().count("write_errors");
             UartTxLog::instance().state("DXL TX write failed", device_);
+            UartTxLog::instance().event("ERROR", "[DXL] " +
+                (written < 0 ? errnoText("write") : std::string("write returned 0")));
             return false;
         }
     }
-    UartTxLog::instance().state("DXL TX active", device_);
+    UartTxLog::instance().state("DXL TX active @ " + std::to_string(baud_) +
+                                " ID=" + std::to_string(packet[2]), device_);
     UartTxLog::instance().record(packet.data(), packet.size(), true,
-        "DXL STATUS ID=" + std::to_string(packet[2]) +
+        "[DXL] STATUS ID=" + std::to_string(packet[2]) +
         " error=" + std::to_string(packet[4]) +
         " params=" + std::to_string(packet.size() - 6));
     tcdrain(serialFd_);
@@ -443,13 +486,22 @@ void DxlUartTransport::processPacket(const std::vector<uint8_t>& packet)
         detail += " address=" + std::to_string(packet[5]) +
             (packet[4] == 2 ? " length=" : " value[0]=") + std::to_string(packet[6]);
     detail += validChecksum ? " checksum=OK" : " checksum=ERROR";
-    if (packet == lastTransmit_) detail += " echo ignored";
+    const char* counter = validChecksum ? "rx_packets_ok" : "rx_checksum_errors";
+    if (packet == lastTransmit_)
+    {
+        detail += " echo ignored";
+        counter = "rx_echo";
+    }
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (packet[2] != table_[0x03] && packet[2] != kBroadcastId)
-            detail += " foreign ID ignored";
+        {
+            detail += " foreign ID ignored (own ID=" + std::to_string(table_[0x03]) + ")";
+            counter = "rx_foreign_id";
+        }
     }
-    UartRxLog::instance().record(packet.data(), packet.size(), true, detail);
+    UartRxLog::instance().count(counter);
+    UartRxLog::instance().record(packet.data(), packet.size(), true, "[DXL] " + detail);
     if (packet == lastTransmit_)
     {
         lastTransmit_.clear();
@@ -527,8 +579,9 @@ void DxlUartTransport::processPacket(const std::vector<uint8_t>& packet)
     const bool isRead = instruction == 0x02;
     if (packetId != kBroadcastId &&
         (instruction == 0x01 ||
-         (returnLevel != 0 && (returnLevel == 2 || isRead))))
-        sendStatus(error, response);
+         (returnLevel != 0 && (returnLevel == 2 || isRead))) &&
+        sendStatus(error, response))
+        UartTxLog::instance().count("responses_sent");
 }
 
 void DxlUartTransport::sendPush()
@@ -544,6 +597,8 @@ void DxlUartTransport::sendPush()
         data.assign(table_.begin() + 0x30, table_.begin() + 0x30 + length);
     }
     const bool sent = sendStatus(0, data);
+    if (sent)
+        UartTxLog::instance().count("push_sent");
     if (sent && !firstDetectionSent_.exchange(true))
     {
         timespec bootTime{};
@@ -558,38 +613,37 @@ void DxlUartTransport::sendPush()
 
 void DxlUartTransport::run()
 {
-    std::vector<uint8_t> buffer;
+    DxlPacketParser parser;
+    std::vector<uint8_t> packet;
+    std::string pushReason;
     auto nextPush = std::chrono::steady_clock::now();
     while (running_)
     {
         uint8_t chunk[128];
         const ssize_t count = read(serialFd_, chunk, sizeof(chunk));
+        const auto now = std::chrono::steady_clock::now();
         if (count > 0)
         {
-            UartRxLog::instance().record(chunk, static_cast<size_t>(count), false, "Raw RX chunk");
-            buffer.insert(buffer.end(), chunk, chunk + count);
+            UartRxLog::instance().record(chunk, static_cast<size_t>(count), false,
+                                         "[DXL] Raw RX chunk");
+            parser.feed(chunk, static_cast<size_t>(count), now);
+        }
+        else if (count < 0 && errno != EAGAIN && errno != EINTR)
+        {
+            UartRxLog::instance().count("read_errors");
+            UartRxLog::instance().event("ERROR", "[DXL] " + errnoText("read"));
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
 
-        while (buffer.size() >= 6)
-        {
-            static constexpr std::array<uint8_t, 2> headerPattern{0xFF, 0xFF};
-            auto header = std::search(buffer.begin(), buffer.end(),
-                                      headerPattern.begin(), headerPattern.end());
-            if (header == buffer.end())
-            {
-                buffer.clear();
-                break;
-            }
-            buffer.erase(buffer.begin(), header);
-            if (buffer.size() < 4)
-                break;
-            const size_t total = 4 + buffer[3];
-            if (buffer.size() < total)
-                break;
-            std::vector<uint8_t> packet(buffer.begin(), buffer.begin() + total);
-            buffer.erase(buffer.begin(), buffer.begin() + total);
+        const uint64_t discardedBefore = parser.discarded();
+        while (parser.next(packet))
             processPacket(packet);
-        }
+        if (const size_t dropped = parser.expire(now))
+            UartRxLog::instance().event("WARN", "[DXL] dropped " + std::to_string(dropped) +
+                " byte(s) of an incomplete packet (no data for 20 ms)");
+        if (parser.discarded() != discardedBefore)
+            UartRxLog::instance().count("rx_discarded_bytes",
+                                        parser.discarded() - discardedBefore);
 
         bool pushEnabled;
         uint8_t interval;
@@ -598,8 +652,18 @@ void DxlUartTransport::run()
             pushEnabled = table_[0x13] != 0;
             interval = std::max<uint8_t>(1, table_[0x14]);
         }
-        const auto now = std::chrono::steady_clock::now();
-        if (pushEnabled && frameReady_ && now >= nextPush && buffer.empty())
+        // Почему push (не) идёт — в журнал только при смене причины
+        const std::string reason =
+            !pushEnabled ? "push disabled (control table 0x13 = 0; startup_push or controller WRITE)"
+            : !frameReady_ ? "push waiting for the first processed frame"
+            : parser.pending() ? "push paused: receiving a controller packet"
+            : "push active every " + std::to_string(interval) + " ms";
+        if (reason != pushReason && (reason.compare(0, 11, "push paused") != 0))
+        {
+            UartTxLog::instance().event("INFO", "[DXL] " + reason);
+            pushReason = reason;
+        }
+        if (pushEnabled && frameReady_ && now >= nextPush && !parser.pending())
         {
             sendPush();
             nextPush = now + std::chrono::milliseconds(interval);

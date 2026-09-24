@@ -2,6 +2,7 @@
 
 #include <functional>
 #include <memory>
+#include <string>
 
 #include <nlohmann/json.hpp>
 #include <opencv2/core.hpp>
@@ -30,7 +31,17 @@ public:
 
     void publish(const VisionFrame& frame, const cv::Mat& image);
 
+    // Порт UART, который держит активный транспорт (для самотестов)
+    struct UartPort
+    {
+        std::string device;      // пусто: UART-транспорт не работает
+        std::string protocol;    // "dxl" | "binary"
+        int baud = 0;
+    };
+    UartPort uartPort() const { return uartPort_; }
+
 private:
+    UartPort uartPort_;
 #ifdef RASPBERRY_CM5
     std::unique_ptr<DxlUartTransport> uart_;
 #endif

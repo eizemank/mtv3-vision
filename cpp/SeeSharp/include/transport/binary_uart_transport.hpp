@@ -21,7 +21,9 @@ public:
 
 private:
     bool openPort();
+    bool fail(const std::string& reason);
     void run();
+    void monitorRx();
     void sendFrame(const VisionFrame& frame);
 
     std::string device_;
@@ -34,4 +36,5 @@ private:
     VisionFrame pendingFrame_;
     bool hasFrame_ = false;
     std::thread worker_;
+    std::thread rxMonitor_;
 };
