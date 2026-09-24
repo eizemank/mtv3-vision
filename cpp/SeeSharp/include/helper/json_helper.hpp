@@ -61,10 +61,21 @@ inline void from_json(const nlohmann::json& j, OneColorBlobParams& p)
     p.maxVertices = j.value("max_vertices", 0);
     p.polygonApproximation = j.value("polygon_approximation", 0.02);
 
-    auto lower = j["lower_range"];
-    auto upper = j["upper_range"];
-    p.lowerRange = cv::Scalar(lower[0], lower[1], lower[2]);
-    p.upperRange = cv::Scalar(upper[0], upper[1], upper[2]);
+    p.colorModel = blob_color::parse(j.value("color_model", std::string("YCrCb")));
+    const auto& lower = j.at("lower_range");
+    const auto& upper = j.at("upper_range");
+    const int count = blob_color::channels(p.colorModel);
+    if (!lower.is_array() || !upper.is_array() || lower.size() != count || upper.size() != count)
+        throw std::invalid_argument("Blob color range channel count does not match color_model");
+    p.lowerRange = p.upperRange = cv::Scalar(0,0,0,0);
+    for (int i=0;i<count;++i) {
+        const double lo=lower.at(i).get<double>(), hi=upper.at(i).get<double>();
+        const double max=blob_color::maximum(p.colorModel,i);
+        if (!std::isfinite(lo)||!std::isfinite(hi)||lo<0||hi<0||lo>max||hi>max||
+            (lo>hi && !(i==0 && blob_color::hueModel(p.colorModel))))
+            throw std::invalid_argument("Invalid blob color channel interval");
+        p.lowerRange[i]=lo;p.upperRange[i]=hi;
+    }
 }
 
 inline void from_json(const nlohmann::json& j, MultiColorBlobParams& p)

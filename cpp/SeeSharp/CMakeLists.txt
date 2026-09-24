@@ -68,6 +68,10 @@ if(NOT RASPBERRY_CM5 AND NOT MTV3_BOARD)
 endif()
 if(NOT RASPBERRY_CM5 AND NOT MTV3_BOARD AND NOT HOST_WEB_UI)
     list(REMOVE_ITEM SRC_FILES
+        ${CMAKE_SOURCE_DIR}/src/training/training_service.cpp
+        ${CMAKE_SOURCE_DIR}/src/training/trainer_job.cpp
+        ${CMAKE_SOURCE_DIR}/src/training/zip_writer.cpp
+        ${CMAKE_SOURCE_DIR}/src/diagnostics/self_test.cpp
         ${CMAKE_SOURCE_DIR}/src/transport/binary_uart_transport.cpp
         ${CMAKE_SOURCE_DIR}/src/transport/transport_manager.cpp
         ${CMAKE_SOURCE_DIR}/src/transport/udp_metadata_transport.cpp

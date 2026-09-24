@@ -29,6 +29,9 @@
 #endif
 #if defined(MTV3_BOARD) || defined(RASPBERRY_CM5) || defined(HOST_WEB_UI)
 #include "transport/transport_manager.hpp"
+#include "training/frame_tap.hpp"
+#include "training/training_service.hpp"
+#include "diagnostics/self_test.hpp"
 #endif
 
 #if defined(MTV3_BOARD) || defined(RASPBERRY_CM5) || defined(HOST_WEB_UI)
@@ -66,25 +69,33 @@
 // путь к конфигу (--config); по умолчанию рядом с бинарником (cwd)
 static std::string gConfigPath = "config.json";
 
-static nlohmann::json runtimeConfig(nlohmann::json config)
+// Каталог конфига: относительные пути моделей/датасетов считаются от него
+static std::filesystem::path configDirectory()
 {
-    auto objectDetection = config.find("object_detection");
-    if (objectDetection == config.end() || !objectDetection->is_object())
-        return config;
-
     std::error_code error;
     std::filesystem::path configPath = std::filesystem::absolute(gConfigPath, error);
     if (error)
         configPath = gConfigPath;
-    const std::filesystem::path configDirectory = configPath.parent_path();
-    for (const char* key : {"model_onnx", "model_rknn", "class_names_file"})
+    return configPath.parent_path();
+}
+
+static nlohmann::json runtimeConfig(nlohmann::json config)
+{
+    const std::filesystem::path directory = configDirectory();
+    for (const char* section : {"object_detection", "classification"})
     {
-        auto value = objectDetection->find(key);
-        if (value == objectDetection->end() || !value->is_string())
+        auto params = config.find(section);
+        if (params == config.end() || !params->is_object())
             continue;
-        std::filesystem::path path = value->get<std::string>();
-        if (!path.empty() && path.is_relative())
-            *value = (configDirectory / path).lexically_normal().string();
+        for (const char* key : {"model_onnx", "model_rknn", "class_names_file"})
+        {
+            auto value = params->find(key);
+            if (value == params->end() || !value->is_string())
+                continue;
+            std::filesystem::path path = value->get<std::string>();
+            if (!path.empty() && path.is_relative())
+                *value = (directory / path).lexically_normal().string();
+        }
     }
     return config;
 }
@@ -98,6 +109,44 @@ static time_t cfgMtime(const char* path)
 
 // применение конфига к живому конвейеру (ставится в main); "" = успех
 static std::function<std::string(const nlohmann::json&)> gApply;
+
+// Транспорты пересоздаются при смене секции transports (web UI, вахтёр).
+// Пересоздаёт отдельный поток: gApply зовёт и рабочий поток DXL (смена
+// детектора контроллером), а он не может уничтожить сам себя.
+static std::mutex gTransportsMutex;
+static std::condition_variable gTransportsChanged;
+static std::shared_ptr<TransportManager> gTransports;
+static nlohmann::json gTransportsSection;       // с чем создан/заказан gTransports
+static nlohmann::json gTransportsPending;       // конфиг для пересоздания
+static bool gTransportsReloadPending = false;
+
+static std::shared_ptr<TransportManager> currentTransports()
+{
+    std::lock_guard<std::mutex> lock(gTransportsMutex);
+    return gTransports;
+}
+
+static void requestTransportReload(const nlohmann::json& config)
+{
+    const nlohmann::json section = config.value("transports", nlohmann::json::object());
+    std::lock_guard<std::mutex> lock(gTransportsMutex);
+    if (section == gTransportsSection)
+        return;
+    gTransportsSection = section;
+    gTransportsPending = config;
+    gTransportsReloadPending = true;
+    gTransportsChanged.notify_all();
+}
+
+// Запросы вида "GET /path " — длина префикса считается компилятором
+template <size_t N>
+static bool startsWith(const std::string& text, const char (&prefix)[N])
+{
+    return text.compare(0, N - 1, prefix) == 0;
+}
+// mtime config.json после нашего собственного сохранения: вахтёр не должен
+// перечитывать (и пересоздавать детектор) то, что сервер только что применил
+static std::atomic<time_t> gOwnSaveMtime{0};
 static std::mutex gPreviewMutex;
 static std::condition_variable gPreviewInputReady;
 static std::condition_variable gPreviewJpegReady;
@@ -118,6 +167,9 @@ static std::atomic<int> gPreviewClients{0};
 #if defined(MTV3_BOARD) || defined(RASPBERRY_CM5)
 static std::unique_ptr<SystemAdmin> gSystemAdmin;
 #endif
+// обучение: съём кадров из sink + сервис /training/* (см. training_service.hpp)
+static FrameTap gFrameTap;
+static std::unique_ptr<TrainingService> gTraining;
 
 static void configurePreview(const nlohmann::json& config)
 {
@@ -262,6 +314,7 @@ static std::string saveConfigAtomic(const nlohmann::json& j)
     if (rename(tmp.c_str(), gConfigPath.c_str()))
         return "rename failed";
     sync();
+    gOwnSaveMtime = cfgMtime(gConfigPath.c_str());
     return "";
 }
 
@@ -290,7 +343,7 @@ details details>summary{font-weight:normal;color:#9bd}
 .row input[type=text],.row input[type=number]{background:#222;color:#eee;border:1px solid #555;padding:3px 6px;width:190px}
 .row input[type=color]{width:38px;height:28px;padding:1px;border:1px solid #555;background:#222;cursor:pointer}
 .blobColorRow{flex-wrap:wrap}.blobColorEditor{flex:1 0 100%;display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:8px;box-sizing:border-box;background:#202020}
-.blobColorEditor label{flex:initial;display:flex;align-items:center;gap:4px}.blobColorEditor input[type=number]{width:70px}.blobColorEditor canvas{width:180px;height:180px;touch-action:none;cursor:crosshair}.blobColorEditor select{background:#222;color:#eee;padding:5px}.blobColorChannels{display:flex;flex-wrap:wrap;gap:8px}.blobColorEditor .hint{flex-basis:100%;color:#aaa}
+.blobColorEditor label{flex:initial;display:flex;align-items:center;gap:4px}.blobColorEditor input[type=number]{width:70px}.blobColorEditor canvas{width:180px;height:180px;touch-action:none;cursor:crosshair}.blobColorEditor select{background:#222;color:#eee;padding:5px}.blobColorBounds{flex-basis:100%;display:grid;gap:6px}.blobColorChannels{display:flex;flex-wrap:wrap;gap:8px}.blobColorEditor .hint{flex-basis:100%;color:#aaa}
 .row input:focus{border-color:#7a7;outline:none}
 .hint{color:#666;font-size:12px}
 .linkedEditor{border:1px solid #475847;background:#141a14;padding:10px;margin:8px 0}
@@ -298,8 +351,11 @@ details details>summary{font-weight:normal;color:#9bd}
 .linkedCard,.linkedRow{border:1px solid #384838;background:#1a211a;padding:7px}.linkedCard select,.linkedRow select{background:#222;color:#eee;border:1px solid #555;padding:4px}
 .linkedRow{display:flex;align-items:center;gap:6px;margin-top:5px}.linkedRow span{color:#9bd}.danger{color:#fbb;border-color:#744}
 .swatch{display:inline-block;width:16px;height:16px;border:1px solid #888;vertical-align:middle;margin-right:5px}
+#devTests{border-collapse:collapse;width:100%;font-size:13px}#devTests td{border-top:1px solid #333;padding:3px 6px;vertical-align:top}
+.pass{color:#8d8}.fail{color:#f88}.skip{color:#bb8}
 </style></head><body>
 <h3 id="appTitle">SeeSharp vision</h3><label><span id="languageLabel">Language</span> <select id="language" onchange="setLanguage(this.value)"><option value="ru">Русский</option><option value="en">English</option></select></label>
+<label class="hint"><input type="checkbox" id="devMode"> Developer mode / Режим разработчика</label>
 <div class="streams"><div><h4 id="sourceTitle">Source</h4><div class="selectFrame"><img id="src" alt="source is not ready"><canvas id="selection"></canvas></div></div>
 <div><h4 id="resultTitle">Detection result</h4><img id="v" alt="result is not ready"></div></div><br>
 <div class="blobSampler" id="blobSampler"><span id="blobPatternLabel">Blob pattern index</span><input id="blobPattern" type="number" min="0" value="0">
@@ -311,26 +367,35 @@ details details>summary{font-weight:normal;color:#9bd}
 &nbsp;<label class="hint"><input type="checkbox" id="raw" onchange="render()"> <span id="rawLabel">редактировать JSON</span></label></div>
 <div id="paramTabs"><button id="detectorTab" class="act" onclick="setParamTab('detector')">Detector parameters</button>
 <button id="generalTab" onclick="setParamTab('general')">General parameters</button>
-<button id="uartTab" onclick="setParamTab('uart')">UART metadata</button></div>
+<button id="uartTab" onclick="setParamTab('uart')">UART metadata</button>
+<button id="trainingTab" onclick="setParamTab('training')">Training</button></div>
 <div id="form"></div>
 <textarea id="cfg" spellcheck="false" style="display:none"></textarea><br>
 <button id="applyButton" onclick="send('/apply')">Применить (до перезапуска)</button>
 <button id="saveButton" onclick="send('/config')">Сохранить (постоянно)</button>
 <button id="revertButton" onclick="revert()">Откатить к сохранённому</button><span id="st"></span>
 <details id="uartLogPanel"><summary>UART RX log / Журнал приёма UART</summary>
-<p>CM5 RX ← controller TX. BYTES: raw data; PACKET: DXL command. Last 100 entries.</p>
+<p>CM5 RX ← controller TX. BYTES: raw data; PACKET: DXL command or binary echo; INFO/WARN/ERROR: transport events. Last 200 entries.</p>
 <button id="uartLogPause">Pause / Пауза</button>
 <label><input id="uartLogRaw" type="checkbox">Show raw bytes / Показать байты</label>
 <div id="uartLogStatus" role="status">Откройте журнал для загрузки / Open log to load</div>
 <pre id="uartLogOutput" style="max-height:360px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere"></pre>
 </details>
 <details id="uartTxLogPanel"><summary>UART TX log / Журнал передачи UART</summary>
-<p>UART TX → controller RX. BYTES: written data; PACKET: DXL response or binary frame. Last 100 entries.</p>
+<p>UART TX → controller RX. BYTES: written data; PACKET: DXL response or binary frame; INFO/WARN/ERROR: transport events. Last 200 entries.</p>
 <button id="uartTxLogPause">Pause / Пауза</button>
 <label><input id="uartTxLogRaw" type="checkbox">Show raw bytes / Показать байты</label>
 <div id="uartTxLogStatus" role="status">Откройте журнал для загрузки / Open log to load</div>
 <pre id="uartTxLogOutput" style="max-height:360px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere"></pre>
 </details>
+<details id="devPanel" open hidden><summary>Developer mode: self-tests / Режим разработчика: самотесты</summary><div class="body">
+<p class="hint">Tests run inside mainCV on the device. unit — pure protocol code; live — the running program (HTTP routes, UART port, TX); hardware — sends bytes to UART (TX↔RX jumper). On boards the admin token below is required.<br>
+Тесты выполняются внутри mainCV на устройстве. unit — код протоколов; live — работающая программа; hardware — посылает байты в UART (перемычка TX↔RX). На платах нужен токен администратора (ниже).</p>
+<label><input type="checkbox" id="devHardware"> Allow hardware tests / Разрешить аппаратные тесты</label>
+<div><button id="devRunAll">Run all / Запустить все</button><button id="devRunSelected">Run selected / Запустить выбранные</button><button id="devReload">Reload list / Обновить список</button></div>
+<div id="devStatus" role="status"></div>
+<table id="devTests"></table>
+</div></details>
 <details><summary id="adminTitle">System administration</summary><div class="body">
 <div class="row"><label>Admin token</label><input id="admToken" type="password"></div>
 <button onclick="adminGet('status')">System status</button>
@@ -352,6 +417,12 @@ details details>summary{font-weight:normal;color:#9bd}
 <textarea id="admOut" spellcheck="false"></textarea>
 </div></details>
 <script>
+)HTML"
+#include "web/dev_mode_js.hpp"
+R"HTML(
+setupDevMode();
+</script>
+<script>
 // Keep UART diagnostics independent of video, canvas and configuration setup.
 function setupUartLog(prefix,direction){
   const panel=document.getElementById(prefix+'Panel');
@@ -361,11 +432,10 @@ function setupUartLog(prefix,direction){
   const raw=document.getElementById(prefix+'Raw');
   let paused=false,busy=false,timer=null,lastLog=null;
   function renderLog(log){
-    status.textContent=`${log.state} ${log.device} | ${direction} bytes=${log.bytes}, packets=${log.packets}`;
+    status.textContent=uartLogSummary(log,direction);
     const atBottom=out.scrollHeight-out.scrollTop-out.clientHeight<30;
-    out.textContent=log.entries.filter(e=>raw.checked||e.kind==='PACKET').map(e=>
-      `${new Date(e.time_ms).toLocaleTimeString()}.${String(e.time_ms%1000).padStart(3,'0')} #${e.sequence} ${e.kind} ${e.detail}\n${e.hex}`
-    ).join('\n')||(direction==='TX'?'No transmitted packets / Нет переданных пакетов':'No received packets / Нет принятых пакетов');
+    out.textContent=log.entries.filter(e=>uartEntryVisible(e,raw.checked)).map(uartEntryText).join('\n')||
+      (direction==='TX'?'No transmitted packets / Нет переданных пакетов':'No received packets / Нет принятых пакетов');
     if(atBottom)out.scrollTop=out.scrollHeight;
   }
   async function poll(){
@@ -404,16 +474,16 @@ setupUartLog('uartLog','RX');
 setupUartLog('uartTxLog','TX');
 </script>
 <script>
-const modes=['off','aruco_detection','object_detection','blob_detection','line_detection','circle_detection'];
+const modes=['off','aruco_detection','object_detection','classification','blob_detection','line_detection','circle_detection'];
 let language='ru';
 const uiText={
   ru:{language:'Язык',source:'Исходное видео',result:'Результат детекции',blobPattern:'Номер цветового шаблона',configureBlob:'Настроить blob по выделенному контуру',selectHint:'Удерживая кнопку, обведите контур объекта',parameters:'Параметры',parametersHint:'(активный алгоритм и общие настройки)',showAll:'показать все разделы',raw:'редактировать JSON',detectorTab:'Параметры детектора',generalTab:'Общие параметры',uartTab:'Метаданные UART',apply:'Применить',save:'Сохранить',revert:'Откатить',linkedEditor:'Редактор связанного объекта',components:'Количество blobs в связанном объекте',selectVideo:'Выбрать на видео',remove:'Удалить',drawLink:'Провести связь на видео',manualLink:'Добавить связь вручную',base:'базовый',baseLink:'Базовая связь',admin:'Системное администрирование'},
   en:{language:'Language',source:'Source video',result:'Detection result',blobPattern:'Blob pattern index',configureBlob:'Configure blob from selected contour',selectHint:'Hold the pointer and trace the object contour',parameters:'Parameters',parametersHint:'(active detector and general settings)',showAll:'show all sections',raw:'edit JSON',detectorTab:'Detector parameters',generalTab:'General parameters',uartTab:'UART metadata',apply:'Apply',save:'Save',revert:'Revert',linkedEditor:'Linked blob object editor',components:'Number of blobs in linked object',selectVideo:'Select on video',remove:'Remove',drawLink:'Draw link on video',manualLink:'Add link manually',base:'base',baseLink:'Base link',admin:'System administration'}
 };
-const modeNames={ru:{off:'Выключено',aruco_detection:'ArUco-маркеры',object_detection:'Объекты YOLO',blob_detection:'Цветовые blobs',line_detection:'Линии',circle_detection:'Окружности'},en:{off:'Off',aruco_detection:'ArUco detection',object_detection:'Object detection',blob_detection:'Blob detection',line_detection:'Line detection',circle_detection:'Circle detection'}};
+const modeNames={ru:{off:'Выключено',aruco_detection:'ArUco-маркеры',object_detection:'Объекты YOLO',classification:'Классификация',blob_detection:'Цветовые blobs',line_detection:'Линии',circle_detection:'Окружности'},en:{off:'Off',aruco_detection:'ArUco detection',object_detection:'Object detection',classification:'Classification',blob_detection:'Blob detection',line_detection:'Line detection',circle_detection:'Circle detection'}};
 function tr(key){return (uiText[language]||uiText.en)[key]||key;}
 function applyLocalization(){
-  const values={languageLabel:tr('language'),sourceTitle:tr('source'),resultTitle:tr('result'),blobPatternLabel:tr('blobPattern'),configureBlobButton:tr('configureBlob'),blobSelectionHint:tr('selectHint'),parametersTitle:tr('parameters'),parametersHint:tr('parametersHint'),showAllLabel:tr('showAll'),rawLabel:tr('raw'),detectorTab:tr('detectorTab'),generalTab:tr('generalTab'),uartTab:tr('uartTab'),applyButton:tr('apply'),saveButton:tr('save'),revertButton:tr('revert'),adminTitle:tr('admin')};
+  const values={languageLabel:tr('language'),sourceTitle:tr('source'),resultTitle:tr('result'),blobPatternLabel:tr('blobPattern'),configureBlobButton:tr('configureBlob'),blobSelectionHint:tr('selectHint'),parametersTitle:tr('parameters'),parametersHint:tr('parametersHint'),showAllLabel:tr('showAll'),rawLabel:tr('raw'),detectorTab:tr('detectorTab'),generalTab:tr('generalTab'),uartTab:tr('uartTab'),trainingTab:tr('trainingTab'),applyButton:tr('apply'),saveButton:tr('save'),revertButton:tr('revert'),adminTitle:tr('admin')};
   Object.entries(values).forEach(([id,value])=>{const element=document.getElementById(id);if(element)element.textContent=value;});
   document.getElementById('language').value=language;
   [...document.getElementById('modes').children].forEach(button=>button.textContent=(modeNames[language]||modeNames.en)[button.dataset.m]||button.dataset.m);
@@ -432,6 +502,7 @@ startVideoStream('src','/source.mjpg');
 startVideoStream('v','/preview.mjpg');
 const selectionCanvas=document.getElementById('selection'),selectionContext=selectionCanvas.getContext('2d');
 let selectionStart=null,selectionPolygon=null,linkedAction=null,linkPreview=null;
+let selectionTool='polygon',selectionRect=null;   // 'rect' — ROI/разметка (training_js.hpp)
 const linkedPoints={};
 function resizeSelectionOverlay(){
   const image=document.getElementById('src'),rect=image.getBoundingClientRect();
@@ -446,12 +517,16 @@ function drawSelection(){selectionContext.clearRect(0,0,selectionCanvas.width,se
   if(linkPreview){selectionContext.strokeStyle='#28b4ff';selectionContext.lineWidth=3;selectionContext.setLineDash([7,5]);selectionContext.beginPath();selectionContext.moveTo(linkPreview.a.x,linkPreview.a.y);selectionContext.lineTo(linkPreview.b.x,linkPreview.b.y);selectionContext.stroke();selectionContext.setLineDash([]);}
   if(selectionPolygon&&selectionPolygon.length){selectionContext.fillStyle='rgba(40,180,255,.18)';selectionContext.strokeStyle='#28b4ff';selectionContext.lineWidth=2;
     selectionContext.beginPath();selectionContext.moveTo(selectionPolygon[0].x,selectionPolygon[0].y);selectionPolygon.slice(1).forEach(point=>selectionContext.lineTo(point.x,point.y));
-    if(!selectionStart&&selectionPolygon.length>=3)selectionContext.closePath();selectionContext.fill();selectionContext.stroke();}}
-selectionCanvas.onpointerdown=event=>{selectionStart=selectionPoint(event);selectionCanvas.setPointerCapture(event.pointerId);if(linkedAction&&linkedAction.type==='link')linkPreview={a:selectionStart,b:selectionStart};else selectionPolygon=[selectionStart];};
+    if(!selectionStart&&selectionPolygon.length>=3)selectionContext.closePath();selectionContext.fill();selectionContext.stroke();}
+  if(selectionRect){selectionContext.strokeStyle='#28b4ff';selectionContext.lineWidth=2;selectionContext.setLineDash([6,4]);selectionContext.strokeRect(selectionRect.x,selectionRect.y,selectionRect.w,selectionRect.h);selectionContext.setLineDash([]);}
+  if(typeof trainingDrawOverlay==='function')trainingDrawOverlay(selectionContext);}
+selectionCanvas.onpointerdown=event=>{selectionStart=selectionPoint(event);selectionCanvas.setPointerCapture(event.pointerId);if(selectionTool==='rect'){selectionRect={x:selectionStart.x,y:selectionStart.y,w:0,h:0};selectionPolygon=null;}else if(linkedAction&&linkedAction.type==='link')linkPreview={a:selectionStart,b:selectionStart};else selectionPolygon=[selectionStart];};
 selectionCanvas.onpointermove=event=>{if(!selectionStart)return;const point=selectionPoint(event);
+  if(selectionTool==='rect'){selectionRect=rectFromPoints(selectionStart,point);drawSelection();return;}
   if(linkedAction&&linkedAction.type==='link')linkPreview={a:selectionStart,b:point};
   else if(!selectionPolygon.length||Math.hypot(point.x-selectionPolygon[selectionPolygon.length-1].x,point.y-selectionPolygon[selectionPolygon.length-1].y)>=3)selectionPolygon.push(point);drawSelection();};
 selectionCanvas.onpointerup=event=>{const end=selectionPoint(event),start=selectionStart;selectionStart=null;
+  if(selectionTool==='rect'){selectionRect=rectFromPoints(start,end);if(selectionRect.w<3||selectionRect.h<3)selectionRect=null;drawSelection();if(typeof onRectSelected==='function')onRectSelected(selectionRect);return;}
   if(linkedAction&&linkedAction.type==='link'){finishLinkedLine(start,end);linkPreview=null;drawSelection();return;}
   if(selectionPolygon&&selectionPolygon.length<3)selectionPolygon=null;drawSelection();
   if(linkedAction&&linkedAction.type==='part')assignLinkedPartFromSelection(linkedAction.patternIndex,linkedAction.nodeIndex);};
@@ -478,20 +553,26 @@ function configureBlobFromSelection(){
   const pixels=context.getImageData(roi.x,roi.y,roi.w,roi.h).data,samples=[];
   const stride=Math.max(1,Math.floor((roi.w*roi.h)/12000));
   for(let pixel=0;pixel<roi.w*roi.h;pixel+=stride){const x=pixel%roi.w,row=Math.floor(pixel/roi.w);if(!pointInPolygon(roi.x+x+.5,roi.y+row+.5,polygon))continue;
-    const offset=pixel*4,r=pixels[offset],g=pixels[offset+1],b=pixels[offset+2],y=.299*r+.587*g+.114*b;samples.push([y,(r-y)*.713+128,(b-y)*.564+128]);}
+    const offset=pixel*4,r=pixels[offset],g=pixels[offset+1],b=pixels[offset+2],y=.299*r+.587*g+.114*b;samples.push([y,(r-y)*.713+128,(b-y)*.564+128,r,g,b]);}
   if(samples.length<10){st.textContent='Selected contour is too small.';return;}
   const center=[0,1,2].map(channel=>percentile(samples.map(sample=>sample[channel]),.5));
   let foreground=samples.filter(sample=>Math.hypot(sample[1]-center[1],sample[2]-center[2])<=24&&Math.abs(sample[0]-center[0])<=55);
   if(foreground.length<samples.length*.1)foreground=samples.sort((a,b)=>Math.hypot(a[0]-center[0],a[1]-center[1],a[2]-center[2])-Math.hypot(b[0]-center[0],b[1]-center[1],b[2]-center[2])).slice(0,Math.max(1,Math.floor(samples.length*.5)));
-  const channels=[0,1,2].map(channel=>foreground.map(sample=>sample[channel]));
-  const lower=channels.map(values=>clampByte(percentile(values,.05)-6));
-  const upper=channels.map(values=>clampByte(percentile(values,.95)+6));
   const pattern=patterns[index],area=polygonArea(polygon)*foreground.length/samples.length;
-  pattern.lower_range=lower;pattern.upper_range=upper;pattern.min_area=Math.max(1,Math.round(area*.45));pattern.max_area=Math.round(area*1.9);
+  normalizeBlobColor(pattern);
+  const modelSamples=foreground.map(sample=>colorRgbToModel(sample.slice(3),pattern.color_model));
+  const maxima=colorModelMaxima(pattern.color_model);
+  pattern.lower_range=maxima.map((max,i)=>Math.max(0,percentile(modelSamples.map(v=>v[i]),.05)-max*.025));
+  pattern.upper_range=maxima.map((max,i)=>Math.min(max,percentile(modelSamples.map(v=>v[i]),.95)+max*.025));
+  if(colorHasHue(pattern.color_model)){
+    const hues=modelSamples.map(v=>v[0]),anchor=hues[0];
+    const unwrapped=hues.map(h=>anchor+((h-anchor+540)%360)-180);
+    const lo=percentile(unwrapped,.05)-9,hi=percentile(unwrapped,.95)+9;
+    pattern.lower_range[0]=hi-lo>=360?0:(lo+360)%360;
+    pattern.upper_range[0]=hi-lo>=360?360:(hi+360)%360;
+  }
+  pattern.min_area=Math.max(1,Math.round(area*.45));pattern.max_area=Math.round(area*1.9);
   pattern.min_width=Math.max(1,Math.round(roi.w*.5));pattern.min_height=Math.max(1,Math.round(roi.h*.5));
-  pattern.min_luminance=lower[0];pattern.max_luminance=upper[0];
-  pattern.min_chrominance_red=lower[1];pattern.max_chrominance_red=upper[1];
-  pattern.min_chrominance_blue=lower[2];pattern.max_chrominance_blue=upper[2];
   st.textContent='Blob pattern '+index+' configured from a '+Math.round(polygonArea(polygon))+' px² contour. Review and Apply settings.';
   render();
 }
@@ -506,7 +587,11 @@ function setParamTab(tab){
   document.getElementById('detectorTab').className=tab==='detector'?'act':'';
   document.getElementById('generalTab').className=tab==='general'?'act':'';
   document.getElementById('uartTab').className=tab==='uart'?'act':'';
+  document.getElementById('trainingTab').className=tab==='training'?'act':'';
   document.getElementById('all').parentElement.style.display=tab==='detector'?'':'none';
+  document.getElementById('raw').parentElement.style.display=tab==='training'?'none':'';
+  if(tab==='training')document.getElementById('raw').checked=false;
+  if(tab!=='training'){clearTimeout(trainingTimer);trainingTimer=null;if(selectionTool==='rect'&&!labeling.active){selectionTool='polygon';selectionRect=null;}}
   render();
 }
 function el(t,c){const e=document.createElement(t);if(c)e.className=c;return e;}
@@ -580,6 +665,7 @@ function pathInput(path){
 )HTML"
 #include "web/vendor/hsluv/hsluv_js.hpp"
 #include "web/blob_color_picker_js.hpp"
+#include "web/training_js.hpp"
 R"HTML(
 function fieldRow(key,val,path){
   const r=el('div','row'), l=el('label'); l.textContent=contextualFieldLabel(key,path); l.title=fieldHint(key)+' JSON key: '+key; r.appendChild(l);
@@ -591,7 +677,10 @@ function fieldRow(key,val,path){
     i.dataset.num=val.every(x=>typeof x==='number')?'1':'0';}
   else{i.type='text';i.value=val;i.dataset.t='s';}
   i.title=l.title; i.dataset.path=JSON.stringify(path); r.appendChild(i);
-  if(key==='lower_range'&&Array.isArray(val))addBlobColorPicker(r,path,val);
+  if(path.length===4&&path[0]==='blob_detection'&&path[1]==='one_color_patterns'&&['lower_range','upper_range'].includes(key)){
+    i.type='hidden';l.hidden=true;
+    if(key==='lower_range')addBlobColorPicker(r,path,val);else r.hidden=true;
+  }
   return r;
 }
 function linkedDefaults(){return{
@@ -685,6 +774,7 @@ function renderLinkedBlobEditor(parent){
 }
 function buildForm(obj,path,parent,open){
   for(const k of Object.keys(obj)){
+    if(path.length===3&&path[0]==='blob_detection'&&path[1]==='one_color_patterns'&&(k==='color_model'||legacyBlobColorFields.includes(k)))continue;
     const v=obj[k], p=path.concat([k]);
     const isObj=v&&typeof v==='object'&&!Array.isArray(v);
     const isObjArr=Array.isArray(v)&&v.some(x=>x&&typeof x==='object');
@@ -707,12 +797,14 @@ function buildForm(obj,path,parent,open){
   }
 }
 function render(){
+  normalizeConfig(cfgObj);
   const rawMode=document.getElementById('raw').checked;
   document.getElementById('cfg').style.display=rawMode?'':'none';
   document.getElementById('form').style.display=rawMode?'none':'';
   if(rawMode){document.getElementById('cfg').value=JSON.stringify(cfgObj,null,2);return;}
   const showAll=document.getElementById('all').checked;
   const f=document.getElementById('form'); f.innerHTML='';
+  if(paramTab==='training'){renderTrainingPanel(f);drawSelection();return;}
   if(paramTab==='detector'&&cur==='blob_detection'&&!showAll)renderLinkedBlobEditor(f);
   const sub={};
   if(paramTab==='general')sub.general_params=cfgObj.general_params;
@@ -742,14 +834,16 @@ function collect(){
 function normalizeConfig(config){
   (((config||{}).blob_detection||{}).one_color_patterns||[]).forEach(pattern=>{
     if(pattern.enabled===undefined)pattern.enabled=true;
+    normalizeBlobColor(pattern);
   });
   return config;
 }
 function load(){fetch('/config').then(r=>r.json()).then(j=>{
-  cfgObj=normalizeConfig(j);language=(j.general_params||{}).ui_language==='en'?'en':'ru';cur=(j.general_params||{}).processing_mode||cur;applyLocalization();mark();render();});}
+  cfgObj=normalizeConfig(j);language=(j.general_params||{}).ui_language==='en'?'en':'ru';cur=(j.general_params||{}).processing_mode||cur;trainingUi.regionMode=null;trainingUi.blobIds=null;applyLocalization();mark();render();});}
 function current(){
+  if(!document.getElementById('raw').checked){const invalid=[...document.querySelectorAll('.blobColorEditor input')].find(i=>!i.checkValidity());if(invalid){invalid.reportValidity();return null;}}
   if(document.getElementById('raw').checked){
-    try{return JSON.parse(document.getElementById('cfg').value);}
+    try{return normalizeConfig(JSON.parse(document.getElementById('cfg').value));}
     catch(e){st.textContent='невалидный json: '+e.message;return null;}
   }
   return collect();
@@ -794,6 +888,64 @@ static void sendResp(int c, const char* type, const std::string& body)
                      type, body.size());
     if (sendAll(c, hdr, static_cast<size_t>(k)))
         sendAll(c, body.data(), body.size());
+}
+
+// Ответ с произвольным статусом и дополнительными заголовками
+static void sendReply(int c, int status, const char* type, const std::string& body,
+                      const std::string& extraHeaders = "")
+{
+    const char* reason = status == 200 ? "OK" : status == 400 ? "Bad Request"
+                       : status == 404 ? "Not Found" : status == 409 ? "Conflict"
+                       : status == 413 ? "Payload Too Large" : status == 507 ? "Insufficient Storage"
+                       : "Error";
+    std::string hdr = "HTTP/1.0 " + std::to_string(status) + " " + reason +
+                      "\r\nContent-Type: " + type + "\r\nContent-Length: " +
+                      std::to_string(body.size()) + "\r\n" + extraHeaders +
+                      "Connection: close\r\n\r\n";
+    if (sendAll(c, hdr.data(), hdr.size()))
+        sendAll(c, body.data(), body.size());
+}
+
+// Потоковая отдача файла (zip датасета, миниатюры) кусками по 64 KiB
+static void sendFile(int c, const char* type, const std::string& path,
+                     const std::string& extraHeaders)
+{
+    std::ifstream in(path, std::ios::binary);
+    std::error_code error;
+    const auto size = std::filesystem::file_size(path, error);
+    if (!in || error)
+    {
+        sendReply(c, 404, "application/json", R"({"error":"file not found"})");
+        return;
+    }
+    std::string hdr = std::string("HTTP/1.0 200 OK\r\nContent-Type: ") + type +
+                      "\r\nContent-Length: " + std::to_string(size) + "\r\n" + extraHeaders +
+                      "Connection: close\r\n\r\n";
+    if (!sendAll(c, hdr.data(), hdr.size()))
+        return;
+    std::vector<char> buffer(64 * 1024);
+    while (in)
+    {
+        in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        const std::streamsize got = in.gcount();
+        if (got > 0 && !sendAll(c, buffer.data(), static_cast<size_t>(got)))
+            return;
+    }
+}
+
+static void sendTrainingReply(int c, const HttpReply& reply)
+{
+    if (!reply.filePath.empty())
+    {
+        sendFile(c, reply.contentType.c_str(), reply.filePath, reply.extraHeaders);
+        if (reply.deleteFileAfterSend)
+        {
+            std::error_code error;
+            std::filesystem::remove(reply.filePath, error);
+        }
+    }
+    else
+        sendReply(c, reply.status, reply.contentType.c_str(), reply.body, reply.extraHeaders);
 }
 
 static void sendMjpegStream(int c, bool source)
@@ -844,6 +996,8 @@ static void sendMjpegStream(int c, bool source)
     }
 }
 
+static constexpr int kControlPort = 8081;
+
 static void controlServer(int port)
 {
     int sfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -892,11 +1046,18 @@ static void controlServer(int port)
                 size_t cl = req.find("Content-Length:");
                 if (cl != std::string::npos && cl < p)
                     contentLen = atol(req.c_str() + cl + 15);
+                // загрузка модели: тело потоково пишется в файл, не в память
+                if (req.compare(0, 21, "POST /training/model ") == 0)
+                    break;
             }
             if (bodyStart != std::string::npos &&
                 req.size() >= bodyStart + (size_t)contentLen)
                 break;
         }
+
+        const bool isTraining = req.compare(0, 14, "GET /training/") == 0 ||
+                                req.compare(0, 15, "POST /training/") == 0 ||
+                                req.compare(0, 19, "GET /metadata/last ") == 0;
 
         char mode[64] = {0};
         bool isApply = req.compare(0, 12, "POST /apply ") == 0;
@@ -1073,18 +1234,66 @@ static void controlServer(int port)
             else
                 sendResp(c, "text/plain", "source is not ready\n");
         }
-        else if (req.compare(0, 16, "GET /uart/rx-log ") == 0 ||
-                 req.compare(0, 16, "GET /uart/tx-log ") == 0)
+        else if (startsWith(req, "GET /uart/rx-log ") ||
+                 startsWith(req, "GET /uart/tx-log "))
         {
-            const auto snapshot = req.compare(0, 16, "GET /uart/tx-log ") == 0
+            const auto snapshot = startsWith(req, "GET /uart/tx-log ")
                 ? UartTxLog::instance().snapshot() : UartRxLog::instance().snapshot();
             nlohmann::json entries = nlohmann::json::array();
             for (const auto& entry : snapshot.entries)
                 entries.push_back({{"sequence", entry.sequence}, {"time_ms", entry.timeMs},
                     {"kind", entry.kind}, {"detail", entry.detail}, {"hex", entry.hex}});
             nlohmann::json body = {{"state", snapshot.state}, {"device", snapshot.device},
-                {"bytes", snapshot.bytes}, {"packets", snapshot.packets}, {"entries", entries}};
-            sendResp(c, "application/json", body.dump());
+                {"bytes", snapshot.bytes}, {"packets", snapshot.packets},
+                {"counters", snapshot.counters}, {"last_error", snapshot.lastError},
+                {"entries", entries}};
+            // байты из UART не обязаны быть UTF-8 (detail/hex — ASCII, но на всякий случай)
+            sendResp(c, "application/json",
+                     body.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+        }
+        else if (startsWith(req, "GET /dev/tests ") || startsWith(req, "POST /dev/tests/run "))
+        {
+#if defined(MTV3_BOARD) || defined(RASPBERRY_CM5)
+            if (!gSystemAdmin || !gSystemAdmin->authorized(req))
+            {
+                sendReply(c, 401, "application/json",
+                          "{\"error\":\"admin token is required for developer tests\"}");
+                close(c);
+                return;
+            }
+#endif
+            if (startsWith(req, "GET /dev/tests "))
+                sendResp(c, "application/json", self_test::list().dump());
+            else
+            {
+                try
+                {
+                    const nlohmann::json request = bodyStart != std::string::npos &&
+                        req.size() > bodyStart
+                        ? nlohmann::json::parse(req.substr(bodyStart)) : nlohmann::json::object();
+                    self_test::Context context;
+                    context.httpPort = kControlPort;
+                    context.allowHardware = request.value("allow_hardware", false);
+                    context.uartPort = [] {
+                        const auto transports = currentTransports();
+                        if (!transports)
+                            return self_test::UartPort{};
+                        const auto port = transports->uartPort();
+                        return self_test::UartPort{port.device, port.protocol, port.baud};
+                    };
+                    {
+                        std::lock_guard<std::mutex> lock(gTransportsMutex);
+                        context.config = {{"transports", gTransportsSection}};
+                    }
+                    sendResp(c, "application/json", self_test::run(
+                        request.value("ids", std::vector<std::string>{}), context).dump());
+                }
+                catch (const std::exception& e)
+                {
+                    sendReply(c, 400, "application/json",
+                              nlohmann::json{{"error", e.what()}}.dump());
+                }
+            }
         }
         else if (req.compare(0, 12, "GET /config ") == 0)
         {
@@ -1092,6 +1301,35 @@ static void controlServer(int port)
             std::stringstream ss;
             ss << f.rdbuf();
             sendResp(c, "application/json", ss.str());
+        }
+        else if (isTraining && gTraining && bodyStart != std::string::npos)
+        {
+            const size_t methodEnd = req.find(' ');
+            const size_t targetEnd = req.find(' ', methodEnd + 1);
+            const std::string method = req.substr(0, methodEnd);
+            const std::string target = req.substr(methodEnd + 1, targetEnd - methodEnd - 1);
+            const std::string headers = req.substr(0, bodyStart);
+            HttpReply reply;
+#if defined(MTV3_BOARD) || defined(RASPBERRY_CM5)
+            if (gTraining->requiresAdminToken() &&
+                (!gSystemAdmin || !gSystemAdmin->authorized(req)))
+            {
+                // обычный литерал: raw-строка внутри #if-блока даёт ложное
+                // предупреждение препроцессора в сборках, где блок пропущен
+                sendReply(c, 401, "application/json",
+                          "{\"error\":\"admin token is required (training.require_admin_token)\"}");
+                close(c);
+                return;
+            }
+#endif
+            if (method == "POST" && target == "/training/model")
+                gTraining->receiveUpload(c, headers, req.substr(bodyStart), contentLen, reply);
+            else if (!gTraining->route(method, target, req.substr(bodyStart), reply))
+            {
+                reply.status = 404;
+                reply.body = R"({"error":"unknown training endpoint"})";
+            }
+            sendTrainingReply(c, reply);
         }
         else
         {
@@ -1201,12 +1439,11 @@ int main(int argc, char** argv)
     auto t0 = std::chrono::steady_clock::now();
     long frames = 0;
     double currentFps = 0.0;
-#if defined(MTV3_BOARD) || defined(RASPBERRY_CM5) || defined(HOST_WEB_UI)
-    std::unique_ptr<TransportManager> transports;
-#endif
     Pipeline pipeline(source, manager, [&](const ProcessedItem& item) {
         ++frames;
         updatePreview(item.frame, item.result);
+        gFrameTap.offer(item.frame, item.metadata, item.frameId, item.timestampMs,
+                        manager.processingType(), currentFps);
         if (!item.metadata.empty() && frames % 10 == 0)
         {
             std::cout << "det f" << frames << ":";
@@ -1229,7 +1466,7 @@ int main(int argc, char** argv)
             cv::imwrite(dumpDir + "/last_src.jpg", item.frame);
         }
 #if defined(MTV3_BOARD) || defined(RASPBERRY_CM5) || defined(HOST_WEB_UI)
-        if (transports)
+        if (const auto transports = currentTransports())
         {
             VisionFrame transportFrame;
             transportFrame.frameId = item.frameId;
@@ -1283,6 +1520,9 @@ int main(int argc, char** argv)
 #if defined(MTV3_BOARD) || defined(RASPBERRY_CM5)
             gSystemAdmin = std::make_unique<SystemAdmin>(j);
 #endif
+            if (gTraining)
+                gTraining->configure(j, configDirectory());
+            requestTransportReload(j);
             return "";
         }
         catch (const std::exception& e)
@@ -1295,8 +1535,28 @@ int main(int argc, char** argv)
 #if defined(MTV3_BOARD) || defined(RASPBERRY_CM5)
     gSystemAdmin = std::make_unique<SystemAdmin>(reader.getRawConfig());
 #endif
-    transports = std::make_unique<TransportManager>(
-        reader.getRawConfig(), [](uint8_t detectorCode) -> bool {
+    // Сервис обучения: конструктор без I/O (boot SLA); активация модели идёт
+    // той же дорогой, что /mode/: загрузить файл -> изменить -> применить -> сохранить
+    gTraining = std::make_unique<TrainingService>(
+        gFrameTap, [](const std::function<void(nlohmann::json&)>& mutate) -> std::string {
+            try
+            {
+                std::ifstream input(gConfigPath);
+                nlohmann::json config;
+                input >> config;
+                mutate(config);
+                const std::string error = gApply ? gApply(config) : "not ready";
+                if (!error.empty())
+                    return error;
+                return saveConfigAtomic(config);
+            }
+            catch (const std::exception& e)
+            {
+                return e.what();
+            }
+        });
+    gTraining->configure(reader.getRawConfig(), configDirectory());
+    const TransportManager::DetectorCallback detectorCallback = [](uint8_t detectorCode) -> bool {
             const char* mode = nullptr;
             switch (detectorCode)
             {
@@ -1321,7 +1581,17 @@ int main(int argc, char** argv)
             {
                 return false;
             }
-        });
+        };
+    {
+        std::lock_guard<std::mutex> lock(gTransportsMutex);
+        gTransportsSection = reader.getRawConfig().value("transports", nlohmann::json::object());
+    }
+    auto initialTransports = std::make_shared<TransportManager>(
+        reader.getRawConfig(), detectorCallback);
+    {
+        std::lock_guard<std::mutex> lock(gTransportsMutex);
+        gTransports = std::move(initialTransports);
+    }
 #endif
 
     // Вахтёр: правка config.json руками/по сети применяется без рестарта
@@ -1335,6 +1605,8 @@ int main(int argc, char** argv)
             if (m == 0 || m == last)
                 continue;
             last = m;
+            if (m == gOwnSaveMtime.load())
+                continue;                       // сохранил сам сервер — уже применено
             ConfigReader r2;
             if (!r2.loadFromFile(gConfigPath))
                 continue;
@@ -1353,8 +1625,37 @@ int main(int argc, char** argv)
             }
         }
     });
+    // Пересоздание транспортов после смены секции transports
+    std::thread transportSupervisor([&] {
+        std::unique_lock<std::mutex> lock(gTransportsMutex);
+        while (ctlRun)
+        {
+            gTransportsChanged.wait_for(lock, std::chrono::seconds(1),
+                                        [] { return gTransportsReloadPending; });
+            if (!gTransportsReloadPending)
+                continue;
+            const nlohmann::json config = gTransportsPending;
+            gTransportsReloadPending = false;
+            std::shared_ptr<TransportManager> old = std::move(gTransports);
+            gTransports.reset();
+            lock.unlock();
+            // кадр может ещё публиковаться: порт закрывается только после него,
+            // иначе новый транспорт не откроет занятый порт
+            while (old && old.use_count() > 1)
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            old.reset();
+            auto fresh = std::make_shared<TransportManager>(config, detectorCallback);
+            std::cout << "transports restarted after config change" << std::endl;
+            UartTxLog::instance().event("INFO", "Transports restarted after a config change");
+            UartRxLog::instance().event("INFO", "Transports restarted after a config change");
+            lock.lock();
+            // пришёл ещё более новый конфиг — цикл сразу пересоздаст снова;
+            // уничтожать здесь под mutex нельзя: поток DXL в gApply ждёт его
+            gTransports = std::move(fresh);
+        }
+    });
     startPreviewEncoder();
-    std::thread control(controlServer, 8081);
+    std::thread control(controlServer, kControlPort);
     control.detach();
 #endif
 
@@ -1364,7 +1665,15 @@ int main(int argc, char** argv)
 #if defined(MTV3_BOARD) || defined(RASPBERRY_CM5) || defined(HOST_WEB_UI)
     ctlRun = false;
     watcher.join();
+    transportSupervisor.join();
+    std::shared_ptr<TransportManager> lastTransports;
+    {
+        std::lock_guard<std::mutex> lock(gTransportsMutex);
+        lastTransports = std::move(gTransports);
+    }
+    lastTransports.reset();         // вне mutex: см. transportSupervisor
     stopPreviewEncoder();
+    gTraining.reset();
 #endif
 
     source.release();
