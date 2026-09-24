@@ -141,16 +141,49 @@ Circle size is controlled by `circle_detection.min_radius`/`max_radius`.
 Line detection supports length/gap, Canny contrast thresholds, angle range,
 normalized ROI (`roi_x`, `roi_y`, `roi_width`, `roi_height`) and `max_lines`.
 
-Neural-network training is deliberately offline. Configure `training.data_yaml`,
-`base_model`, `epochs`, `image_size` and `output_onnx`, install `ultralytics`,
-then run:
+## Neural-network training
+
+The web UI has a **Training** tab (`docs/DETECTOR_UI_GUIDE_RU.md`, section 13)
+that collects samples from the live camera, trains the small 64×64 classifier
+on the CM5 itself and activates the result. Nothing runs at boot: the trainer is
+a `nice 15` / idle-IO subprocess started on demand and killed with the service.
+Datasets live in `training.dataset_dir` (`/opt/seesharp/datasets`), models in
+`training.models_dir` (`/opt/seesharp/models`); neither affects the boot SLA.
+
+Install PyTorch (CPU wheels, ~600 MB, Python 3.11 on Bookworm) once:
+
+```bash
+sudo apt install -y python3-venv python3-pip
+sudo python3 -m venv /opt/seesharp/venv
+sudo /opt/seesharp/venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+sudo /opt/seesharp/venv/bin/pip install onnx pillow
+sudo install -d /opt/seesharp/nn /opt/seesharp/datasets /opt/seesharp/models
+sudo install -m 0644 common/nn/simple_classifier.py /opt/seesharp/nn/
+```
+
+`training.python` and `training.classifier_script` in `config.json` point at
+these paths by default. Press **Check trainer** in the UI to verify. Training a
+few hundred 64×64 crops for 20 epochs takes tens of seconds; pipeline FPS drops
+while it runs. Without PyTorch the tab still collects data: download the
+dataset zip, train on a PC (`python3 common/nn/simple_classifier.py train
+--data classifier --out models --export --stamp`) and upload the ONNX back.
+
+YOLO fine-tuning stays on a host PC. Either configure `training.data_yaml`,
+`base_model`, `epochs`, `image_size`, `output_onnx` and run
 
 ```bash
 python3 board/raspberry-cm5/train_yolo.py build-cm5/config.json
 ```
 
-The dataset YAML and labels use the standard Ultralytics detection format.
-Restart or hot-reload `object_detection` after export.
+or label frames in the Training tab, download the YOLO zip and run
+
+```bash
+python3 board/raspberry-cm5/train_yolo.py --data yolo/dataset.yaml --epochs 50 --out custom_yolo.onnx
+```
+
+then upload `custom_yolo.onnx` with kind `yolo` and activate it. The dataset
+YAML and labels use the standard Ultralytics detection format; export is ONNX
+opset 12 with static shapes and no built-in NMS, as `YoloProcessor` expects.
 
 Metadata output over UDP and the Dynamixel 1.0 UART virtual device are
 documented in [`TRANSPORTS.md`](./TRANSPORTS.md).

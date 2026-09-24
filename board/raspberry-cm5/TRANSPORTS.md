@@ -18,7 +18,7 @@ The `transports` section in `config.json` controls metadata outputs:
   },
   "uart_binary": {
     "enabled": true,
-    "device": "/dev/serial0",
+    "device": "/dev/ttyAMA0",
     "baud": 115200,
     "max_objects": 20
   }
@@ -26,10 +26,34 @@ The `transports` section in `config.json` controls metadata outputs:
 ```
 
 `uart_binary` sends each processed detection frame automatically. The worker
-keeps only the latest pending frame, so a slow UART does not block processing.
+keeps only the latest pending frame, so a slow UART does not block processing
+(counted as `frames_dropped_busy` in the TX log). The port is opened read/write:
+received bytes appear in the RX log, and `AA 55` frames coming back through a
+TX-RX jumper are shown as packets with their CRC status.
 
-Restart `mainCV` after changing this section. Detector parameters and mode can
-still be reloaded while the process is running.
+Changes to the `transports` section (web UI Apply/Save or an edit of
+`config.json`) restart the transports without restarting `mainCV`. If
+`uart_dxl` and `uart_binary` are enabled on the same port, only `uart_dxl` is
+started and the conflict is reported in the UART logs.
+
+### UART logs and developer self-tests
+
+The web UI shows the UART RX and TX logs (`GET /uart/rx-log`, `/uart/tx-log`):
+the transport state, counters (`frames_sent`, `push_sent`, `write_errors`,
+`rx_discarded_bytes`, ...), the last error with `errno` text, and INFO/WARN/ERROR
+events such as a failed `open()`, a DXL EEPROM baud that overrides the config,
+or the reason DXL Push is not sent.
+
+Tick **Developer mode** at the top of the page (or open `/?dev=1`) to run the
+built-in self-tests on the device (`GET /dev/tests`, `POST /dev/tests/run`; on
+boards the admin token is required):
+
+- `unit`: CRC and packet layout, binary and DXL parsers (noise, split reads,
+  resync);
+- `live`: the log routes return JSON; the port is open and not used by the
+  kernel console, getty or another process; TX actually writes packets;
+- `hardware` (`uart.loopback`, only with "Allow hardware tests"): sends 12
+  bytes and expects them on RX through a TX-RX jumper (pin 8 to pin 10).
 
 ## HTTP video
 
@@ -192,7 +216,7 @@ packet payload limit:
 
 | Detector | Object bytes | Maximum stored objects |
 |---|---:|---:|
-| NN classification | 14 | 14 |
+| NN classification | 14 | 14 (one record per classified region in `region_mode=blob`) |
 | ArUco | 30 | 6 |
 | Blob | 12 | 15 (configured limit) |
 | Line | 12 | 15 (configured limit) |
@@ -220,7 +244,8 @@ sudo reboot
 ```
 
 On CM5 the script loads `uart0-pi5` for GPIO14/15. Use the explicit UART0
-device; `/dev/serial0` may point to the separate debug UART. After reboot:
+device (the default in `config.json`); `/dev/serial0` may point to the
+separate debug UART. After reboot:
 
 ```bash
 pinctrl get 14 15

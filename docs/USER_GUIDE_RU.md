@@ -79,6 +79,8 @@ http://<адрес-модуля>:8081/
 | `GET /preview.jpg` | Последний размеченный JPEG |
 | `GET /source.mjpg` | Поток исходных кадров |
 | `GET /preview.mjpg` | Поток размеченных кадров |
+| `GET /metadata/last` | Метаданные последнего кадра (детектор, объекты, FPS) |
+| `/training/*` | Сбор датасета, обучение и активация моделей — см. 2.4 |
 
 Пример:
 
@@ -93,6 +95,49 @@ curl -X POST -H "Content-Type: application/json" \
 и административные запросы требуют заголовок авторизации, используемый веб-UI.
 Обычные параметры детектора этим ограничением в текущей версии не защищены;
 поэтому модуль нельзя публиковать напрямую в Интернет.
+
+### 2.4. HTTP-интерфейс обучения (`/training/*`)
+
+Используется вкладкой **Обучение** веб-интерфейса; пригоден и для скриптов.
+По умолчанию открыт так же, как `/config`; при `training.require_admin_token =
+true` требует тот же заголовок токена, что и `/admin`.
+
+| Метод и путь | Назначение |
+|---|---|
+| `GET /training/status` | Датасет (классы, счётчики, квоты), состояние съёмки и тренера, модели, активная модель |
+| `POST /training/check` | Проверить Python/PyTorch на устройстве (`training.python`) |
+| `POST /training/classes` | `{op: add\|rename\|delete\|display, name, new_name?, display?, confirm?}` |
+| `POST /training/capture` | `{class, region_mode?, roi?, blob_pattern_ids?, count, interval_ms}` — снять примеры; `{kind:"yolo", count, interval_ms}` — полные кадры для разметки |
+| `POST /training/capture/stop` | Остановить серию |
+| `GET /training/samples?class=&offset=&limit=` | Список примеров класса (новые первыми) |
+| `GET /training/thumb?class=&file=` | JPEG примера |
+| `POST /training/samples/delete` | `{class, files:[…]}` |
+| `POST /training/train` | `{epochs?, image_size?}` — запустить обучение классификатора подпроцессом |
+| `POST /training/train/stop` | Остановить обучение (SIGTERM, затем SIGKILL) |
+| `GET /training/train/log?since=N` | Строки вывода тренера с `sequence > N` |
+| `GET /training/models` | ONNX-модели в `training.models_dir` с классами и метриками |
+| `POST /training/activate` | `{model, kind?, region_mode?}` — записать модель и классы в конфиг, включить режим, сохранить |
+| `GET /training/export?kind=classifier\|yolo` | ZIP датасета (ImageFolder или YOLO с `dataset.yaml`) |
+| `POST /training/model` | Загрузка ONNX: тело — файл, заголовки `X-File-Name`, `X-Model-Kind`, `X-Class-Names` (JSON), `X-Input-Size` |
+| `GET/POST /training/yolo/*` | Кадры, разметка и классы YOLO (`samples`, `image`, `labels`, `classes`, `delete`) |
+
+Пример полного цикла для классификатора:
+
+```bash
+H=http://192.168.4.1:8081
+curl -X POST $H/training/classes -d '{"op":"add","name":"ok"}'
+curl -X POST $H/training/classes -d '{"op":"add","name":"defect"}'
+curl -X POST $H/training/capture -d '{"class":"ok","region_mode":"roi","count":50,"interval_ms":100}'
+curl -X POST $H/training/train -d '{"epochs":20}'
+curl "$H/training/train/log"
+curl -X POST $H/training/activate -d '{"model":"simple_classifier_20260101_120000.onnx","region_mode":"roi"}'
+curl $H/metadata/last
+```
+
+Датасет лежит в `training.dataset_dir` (по умолчанию `datasets/` рядом с
+конфигом): `classifier/<класс>/*.jpg` (ImageFolder), `classifier/index.jsonl`
+(откуда вырезан каждый пример), `yolo/images`, `yolo/labels`. Модели — в
+`training.models_dir` (`models/`): `<имя>.onnx` и `<имя>.classes.json`.
 
 ## 3. Общие параметры изображения
 
@@ -399,24 +444,61 @@ Gaussian Blur 9×9.
 Несовпадение layout/attributes обычно даёт отсутствие результатов или
 бессмысленные рамки и не исправляется подбором порогов.
 
-### 4.6. Классификация всего кадра (`classification`)
+### 4.6. Классификация (`classification`)
 
-Классификатор возвращает не координаты объекта, а один наиболее вероятный класс
-для всего изображения. При успешной классификации bounding box равен всему кадру.
+Классификатор относит область кадра к одному из классов. Область задаёт
+`region_mode`:
+
+- `whole` — весь кадр, один результат; при успехе bounding box равен кадру;
+- `roi` — фиксированный прямоугольник `roi = [x, y, w, h]` в долях кадра;
+- `blob` — каждая рамка, найденная одноцветным blob-детектором (секция
+  `blob_detection`, составные объекты не используются). Результатов может быть
+  несколько за кадр, по одному на область.
 
 | Поле | Влияние |
 |---|---|
-| `model_rknn`, `model_onnx` | Модели модуля и настольной сборки |
+| `model_rknn`, `model_onnx` | Модели модуля и настольной/CM5 сборки; относительный путь считается от каталога конфига |
 | `input_size` | Квадратный вход модели |
 | `resize_size` | Размер короткой стороны перед центральным crop |
-| `center_crop` | Сохранить пропорции и вырезать центр; иначе растянуть весь кадр в квадрат |
+| `center_crop` | Сохранить пропорции и вырезать центр; иначе растянуть область в квадрат |
 | `swap_rb` | BGR→RGB в настольной сборке; должен совпадать с обучением |
 | `mean`, `std` | Нормализация настольной сборки; по 3 значения, `std` не может быть 0 |
 | `score_threshold` | Минимальная softmax-вероятность для выдачи результата |
 | `class_names`, `class_names_file` | Имена классов в порядке выходов модели |
+| `region_mode` | `whole`, `roi` или `blob` |
+| `roi` | Прямоугольник для режима `roi` и для съёмки датасета, доли кадра 0..1 |
+| `blob_pattern_ids` | Какие одноцветные шаблоны дают рамки; пусто — все включённые |
+| `crop_padding` | Отступ вокруг рамки blob (доля её размера); должен совпадать со значением при съёмке датасета |
+| `max_regions` | Сколько самых крупных рамок классифицировать за кадр |
+
+В метаданных каждая область даёт запись: `id` — индекс класса, `confidence`
+(и `area`) — вероятность, `bbox` — область. Транспортам режим `blob` виден как
+несколько записей классификации за кадр.
 
 На MTV3 препроцессинг RKNN должен быть согласован при конвертации модели. Для
 штатной модели контракт: RGB, 64×64, нормализация `x/255`.
+
+### 4.7. Обучение на устройстве (`training`)
+
+Секция задаёт, где хранить датасет и модели и чем обучать. Ничего из этого не
+выполняется при старте: тренер запускается только по кнопке во вкладке
+**Обучение** (или `POST /training/train`), с пониженным приоритетом CPU/IO и
+завершается вместе с движком.
+
+| Поле | Значение |
+|---|---|
+| `dataset_dir`, `models_dir` | Каталоги датасета и моделей (относительно конфига) |
+| `python`, `classifier_script` | Интерпретатор с PyTorch и путь к `simple_classifier.py` на устройстве |
+| `classifier_epochs`, `classifier_image_size` | Значения по умолчанию для кнопки «Обучить» |
+| `jpeg_quality` | Качество JPEG примеров |
+| `max_dataset_mb`, `max_samples_per_class`, `max_burst`, `min_burst_interval_ms` | Квоты съёмки |
+| `max_upload_mb` | Лимит загрузки ONNX через `/training/model` |
+| `require_admin_token` | Требовать админ-токен для `/training/*` |
+| `data_yaml`, `base_model`, `epochs`, `image_size`, `output_onnx` | Параметры `train_yolo.py` на хосте |
+
+Если PyTorch на устройстве не установлен, вкладка сообщает причину; датасет
+можно скачать zip-архивом, обучить на ПК (`common/nn/simple_classifier.py`
+или `board/raspberry-cm5/train_yolo.py`) и загрузить ONNX обратно.
 
 ## 5. Транспортные протоколы
 
@@ -510,14 +592,18 @@ while True:
 ```json
 "uart_binary": {
   "enabled": true,
-  "device": "/dev/serial0",
+  "device": "/dev/ttyAMA0",
   "baud": 115200,
   "max_objects": 20
 }
 ```
 
 Линия работает в raw-режиме, стандартно 8N1. Поддерживаемые скорости: 9600,
-19200, 38400, 57600, 115200 и, если поддержано ОС, 230400 бит/с.
+19200, 38400, 57600, 115200 и, если поддержано ОС, 230400, 460800, 500000,
+921600, 1000000 бит/с. При неподдерживаемой скорости порт не открывается, а
+причина видна в журнале UART TX (`last error`). На CM5 используйте
+`/dev/ttyAMA0`: `/dev/serial0` может указывать на отладочный UART.
+Изменения секции `transports` применяются без перезапуска `mainCV`.
 `max_objects` ограничивается диапазоном `1..20`. Интерфейс модуля использует
 уровни 3,3 В; не подключайте его напрямую к 5-вольтовому UART.
 
@@ -612,7 +698,7 @@ python board/raspberry-cm5/usb_stream_receiver.py COM7
 | Есть исходный кадр, нет разметки | `processing_mode`, пороги, модель/словарь, ответ `POST /apply` |
 | Цвет плавает | Экспозицию, баланс белого, диапазоны YCrCb при разных условиях |
 | UDP не приходит | `host` должен быть адресом приёмника; firewall; транспорт требует рестарт |
-| UART молчит | Устройство, общий GND, уровни 3,3 В, одинаковый baud, занятость порта консолью |
+| UART молчит | Устройство, общий GND, уровни 3,3 В, одинаковый baud, занятость порта консолью. Откройте журналы UART RX/TX (состояние, счётчики, последняя ошибка) и включите «Режим разработчика» вверху страницы: тесты `uart.port`, `uart.tx_activity`, а с перемычкой TX↔RX — `uart.loopback` |
 | YOLO не запускается | Наличие `.rknn`, права, соответствие input/layout/attributes, состояние NPU |
 | После перезапуска вернулись параметры | Использовалось **Применить**, а не **Сохранить** |
 | Конфиг не применяется | JSON-синтаксис, обязательные поля, диапазон поворота, 1–5 узлов составного объекта |

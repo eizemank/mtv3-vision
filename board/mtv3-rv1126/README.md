@@ -41,8 +41,10 @@ Python-ветка (SeeSharpPy + py36ify) отменена: python3 для target
 Контракт препроцессинга везде одинаков: RGB, 64x64, x/255.
 Артефакты — в `sw/common/models/`.
 
-1. `simple_classifier.py train <data_dir>` — обучение (папка на класс);
-   `export` → `models/simple_classifier.onnx` (opset 10). Требует PyTorch на хосте.
+1. `simple_classifier.py train --data <data_dir> --out models --export` —
+   обучение (папка на класс) и экспорт `models/simple_classifier.onnx`
+   (opset 10). Требует PyTorch на хосте. Датасет можно собрать во вкладке
+   «Обучение» веб-интерфейса и скачать zip-архивом (`/training/export`).
 2. Десктоп-проверка: положить onnx рядом с mainCV, режим classification.
 3. `onnx2rknn.py simple_classifier.onnx dataset.txt` — в окружении
    rknn-toolkit 1.6.1 (conda rknn, AVX); dataset.txt — 50-200 jpg с камеры
