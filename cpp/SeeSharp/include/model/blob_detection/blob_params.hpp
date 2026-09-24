@@ -2,6 +2,7 @@
 
 #include <opencv2/opencv.hpp>
 #include <cmath>
+#include "model/blob_detection/color_model.hpp"
 
 /**
  * @brief Contains classes and structures that is used in configureation file for blob detection.
@@ -15,6 +16,7 @@ struct OneColorBlobParams
     double maxArea;
     int minWidth;
     int minHeight;
+    blob_color::Model colorModel = blob_color::Model::YCrCb;
     cv::Scalar lowerRange;
     cv::Scalar upperRange;
     double minCircularity;

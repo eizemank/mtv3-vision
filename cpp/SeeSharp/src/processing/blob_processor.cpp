@@ -1,6 +1,8 @@
 #include "processing/blob_processor.hpp"
+#include "processing/blob_color_mask.hpp"
 
 #include <algorithm>
+#include <map>
 
 // -*-*-*-*- "It's a battle between code readability and performance" -*-*-*-*-
 
@@ -52,9 +54,8 @@ std::pair<cv::Mat, std::vector<BlobMetaData>> BlobProcessor::process(cv::Mat& fr
 
 std::unordered_map<int, std::vector<DetectedBlob>> BlobProcessor::getOneColorBlobs(cv::Mat& frame)
 {
-    // Convert to YCrCb color space
-    cv::Mat colorConverted;
-    cv::cvtColor(frame, colorConverted, cv::COLOR_BGR2YCrCb);
+    // Convert once per selected model, even when multiple patterns share it.
+    std::map<blob_color::Model, cv::Mat> converted;
 
     std::unordered_map<int, std::vector<DetectedBlob>> detectedOneColorBlobs;
     for (const auto& params : params_.oneColorBlobParams)
@@ -63,6 +64,31 @@ std::unordered_map<int, std::vector<DetectedBlob>> BlobProcessor::getOneColorBlo
             continue;
 
         // Get mask and binarised frame
+        auto& colorConverted = converted[params.colorModel];
+        if (colorConverted.empty()) {
+            if (params.colorModel == blob_color::Model::YCrCb || params.colorModel == blob_color::Model::YCbCr) {
+                // Preserve exact OpenCV thresholds for existing configurations.
+                cv::cvtColor(frame, colorConverted, cv::COLOR_BGR2YCrCb);
+                if (params.colorModel == blob_color::Model::YCbCr) {
+                    cv::Mat reordered(frame.size(), CV_8UC3);
+                    const int order[] = {0,0,1,2,2,1};
+                    cv::mixChannels(&colorConverted,1,&reordered,1,order,3);
+                    colorConverted = reordered;
+                }
+            } else {
+                colorConverted.create(frame.size(), CV_32FC4);
+                cv::parallel_for_(cv::Range(0,frame.rows), [&](const cv::Range& rows) {
+                    for(int y=rows.start;y<rows.end;++y) {
+                        const auto* src=frame.ptr<cv::Vec3b>(y);
+                        auto* dst=colorConverted.ptr<cv::Vec4f>(y);
+                        for(int x=0;x<frame.cols;++x) {
+                            const auto values=blob_color::fromRgb(src[x][2],src[x][1],src[x][0],params.colorModel);
+                            for(int c=0;c<4;++c)dst[x][c]=static_cast<float>(values[c]);
+                        }
+                    }
+                });
+            }
+        }
         cv::Mat mask = getMask(params, colorConverted);
 
         // Find contours by color range
@@ -613,11 +639,8 @@ std::vector<BlobMetaData> BlobProcessor::getCompositeMetaData(
 
 cv::Mat BlobProcessor::getMask(const OneColorBlobParams& params, cv::Mat& colorConverted)
 {
-    cv::Scalar lower(params.lowerRange[0], params.lowerRange[1], params.lowerRange[2]);
-    cv::Scalar upper(params.upperRange[0], params.upperRange[1], params.upperRange[2]);
-
-    cv::Mat mask;
-    cv::inRange(colorConverted, lower, upper, mask);
+    cv::Mat mask = blobColorMask(colorConverted, params.colorModel,
+                                 params.lowerRange, params.upperRange);
     applyMorphology(mask);
 
     return mask;
