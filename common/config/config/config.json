@@ -459,7 +459,12 @@
       "model_rknn": "simple_classifier.rknn",
       "input_size": 64,
       "score_threshold": 0.5,
-      "class_names": ["background", "target"]
+      "class_names": ["background", "target"],
+      "region_mode": "whole",
+      "roi": [0.25, 0.25, 0.5, 0.5],
+      "blob_pattern_ids": [],
+      "crop_padding": 0.1,
+      "max_regions": 8
     },
     "transports": {
       "udp_metadata": {

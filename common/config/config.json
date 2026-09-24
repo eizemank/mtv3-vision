@@ -494,12 +494,37 @@
       "output_attributes": 84,
       "output_has_objectness": false
     },
+    "classification": {
+      "model_onnx": "models/simple_classifier.onnx",
+      "model_rknn": "simple_classifier.rknn",
+      "input_size": 64,
+      "score_threshold": 0.5,
+      "class_names": [],
+      "region_mode": "whole",
+      "roi": [0.25, 0.25, 0.5, 0.5],
+      "blob_pattern_ids": [],
+      "crop_padding": 0.1,
+      "max_regions": 8
+    },
     "training": {
       "data_yaml": "dataset.yaml",
       "base_model": "yolo11n.pt",
       "epochs": 50,
       "image_size": 640,
-      "output_onnx": "custom_yolo.onnx"
+      "output_onnx": "custom_yolo.onnx",
+      "dataset_dir": "datasets",
+      "models_dir": "models",
+      "python": "/opt/seesharp/venv/bin/python3",
+      "classifier_script": "/opt/seesharp/nn/simple_classifier.py",
+      "classifier_epochs": 20,
+      "classifier_image_size": 64,
+      "jpeg_quality": 90,
+      "max_dataset_mb": 512,
+      "max_samples_per_class": 2000,
+      "max_burst": 200,
+      "min_burst_interval_ms": 50,
+      "max_upload_mb": 64,
+      "require_admin_token": false
     },
     "transports": {
       "udp_metadata": {
@@ -527,7 +552,7 @@
       },
       "uart_dxl": {
         "enabled": false,
-        "device": "/dev/serial0",
+        "device": "/dev/ttyAMA0",
         "baud": 115200,
         "id": 100,
         "rs485": false,
@@ -537,7 +562,7 @@
       },
       "uart_binary": {
         "enabled": true,
-        "device": "/dev/serial0",
+        "device": "/dev/ttyAMA0",
         "baud": 115200,
         "max_objects": 20
       }

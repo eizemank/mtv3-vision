@@ -1,4 +1,6 @@
 #include "processing/processing_factory.hpp"
+
+#include <algorithm>
 #include "model/common_config.hpp"
 #include "model/blob_detection/blob_params.hpp"
 #include "processing/blob_processor.hpp"
@@ -9,9 +11,9 @@
 #include "model/general_params.hpp"
 #include "processing/aruco_processor.hpp"
 #include "model/yolo_params.hpp"
-#ifdef MTV3_BOARD
 #include "model/classifier_params.hpp"
 #include "processing/classifier_processor.hpp"
+#ifdef MTV3_BOARD
 #include "processing/rknn_yolo_processor.hpp"
 #else
 #include "processing/yolo_processor.hpp"
@@ -51,11 +53,29 @@ std::unique_ptr<IFrameProcessor> ProcessingFactory::createProcessor(const nlohma
             return std::make_unique<ArucoProcessor>(params);
         }
         case ProcessingType::Classification:
-#ifdef MTV3_BOARD
         {
-            ClassifierParams params = rawConfig.at("classification").get<ClassifierParams>();
-            return std::make_unique<ClassifierProcessor>(params);
+            ClassifierParams params = Automapper::mapParams<ClassifierParams>(
+                rawConfig, ConfigKeys::CLASSIFICATION_CONFIG_ID);
+            std::unique_ptr<IFrameProcessor> regionSource;
+            if (params.regionMode == ClassifierRegionMode::Blob)
+            {
+                // Рамки берём у одноцветных blob; составные объекты и
+                // отфильтрованные шаблоны выключаем в копии параметров.
+                BlobParams blob = Automapper::mapParams<BlobParams>(
+                    rawConfig, ConfigKeys::BLOB_DETECTION_CONFIG_ID);
+                blob.enableOneColorDetection = true;
+                blob.enableMultiColorDetection = false;
+                blob.multiColorBlobParams.clear();
+                if (!params.blobPatternIds.empty())
+                    for (OneColorBlobParams& pattern : blob.oneColorBlobParams)
+                        pattern.enabled = pattern.enabled &&
+                            std::find(params.blobPatternIds.begin(), params.blobPatternIds.end(),
+                                      pattern.id) != params.blobPatternIds.end();
+                regionSource = std::make_unique<BlobProcessor>(blob);
+            }
+            return std::make_unique<ClassifierProcessor>(params, std::move(regionSource));
         }
+#ifdef MTV3_BOARD
         case ProcessingType::ObjectDetection:
         {
             YoloParams params = rawConfig.at("object_detection").get<YoloParams>();

@@ -7,9 +7,14 @@
 
 #include <opencv2/imgproc.hpp>
 
-ClassifierProcessor::ClassifierProcessor(const ClassifierParams& params)
-    : params_(params)
+#include "processing/region_crop.hpp"
+
+ClassifierProcessor::ClassifierProcessor(const ClassifierParams& params,
+                                         std::unique_ptr<IFrameProcessor> regionSource)
+    : params_(params), regionSource_(std::move(regionSource))
 {
+    if (params_.regionMode == ClassifierRegionMode::Blob && !regionSource_)
+        throw std::runtime_error("ClassifierProcessor: region_mode=blob needs a blob detector");
 #ifdef MTV3_BOARD
     if (!net_.init(params_.modelRknn))
         throw std::runtime_error("ClassifierProcessor: rknn init failed: " +
@@ -86,54 +91,108 @@ std::vector<float> ClassifierProcessor::infer(const cv::Mat& bgr)
 #endif
 }
 
+std::vector<cv::Rect> ClassifierProcessor::regions(cv::Mat& frame)
+{
+    const cv::Size size = frame.size();
+    switch (params_.regionMode)
+    {
+        case ClassifierRegionMode::Roi:
+            return {roiToPixels(params_.roi, size)};
+        case ClassifierRegionMode::Blob:
+        {
+            std::vector<cv::Rect> boxes;
+            if (!regionSource_)
+                return boxes;
+            // BlobProcessor рисует на копии, исходный кадр не трогает
+            auto detected = regionSource_->process(frame).second;
+            for (const BlobMetaData& blob : detected)
+            {
+                const cv::Rect padded = padRegion(blob.boundingBox, params_.cropPadding, size);
+                if (padded.width >= 4 && padded.height >= 4)
+                    boxes.push_back(padded);
+            }
+            std::stable_sort(boxes.begin(), boxes.end(),
+                             [](const cv::Rect& a, const cv::Rect& b) { return a.area() > b.area(); });
+            if (static_cast<int>(boxes.size()) > params_.maxRegions)
+                boxes.resize(static_cast<size_t>(params_.maxRegions));
+            return boxes;
+        }
+        default:
+            return {cv::Rect(0, 0, size.width, size.height)};
+    }
+}
+
 std::pair<cv::Mat, std::vector<BlobMetaData>> ClassifierProcessor::process(cv::Mat& frame)
 {
     cv::Mat result = frame.clone();
     std::vector<BlobMetaData> metadata;
 
-    std::vector<float> logits = infer(frame);
-    if (logits.empty())
-        return { result, metadata };
+    const std::vector<cv::Rect> areas = regions(frame);
+    const bool wholeFrame = params_.regionMode == ClassifierRegionMode::Whole;
+    if (params_.regionMode == ClassifierRegionMode::Roi && !areas.empty())
+        cv::rectangle(result, areas.front(), cv::Scalar(255, 160, 0), 1);
 
-    // softmax (модель отдаёт логиты)
-    float mx = *std::max_element(logits.begin(), logits.end());
-    double sum = 0.0;
-    for (float& v : logits)
+    int textLine = 0;
+    for (const cv::Rect& area : areas)
     {
-        v = std::exp(v - mx);
-        sum += v;
-    }
-    int best = (int)(std::max_element(logits.begin(), logits.end()) -
-                     logits.begin());
-    float score = (float)(logits[best] / sum);
+        const cv::Mat crop = cropRegion(frame, area);
+        if (crop.empty())
+            continue;
+        std::vector<float> logits = infer(crop);
+        if (logits.empty())
+            continue;
 
-    std::string label = best < (int)params_.classNames.size()
-                            ? params_.classNames[best]
-                            : "class" + std::to_string(best);
-    char text[128];
-    snprintf(text, sizeof(text), "%s %.2f", label.c_str(), score);
-    bool accepted = score >= params_.scoreThreshold;
-    if (accepted)
-    {
-        constexpr int margin = 3;
-        const cv::Rect classificationBox(
-            margin, margin,
-            std::max(1, frame.cols - margin * 2),
-            std::max(1, frame.rows - margin * 2));
-        cv::rectangle(result, classificationBox, cv::Scalar(0, 220, 0), 3);
-    }
-    cv::putText(result, text, { 10, 30 }, cv::FONT_HERSHEY_SIMPLEX, 0.9,
-                accepted ? cv::Scalar(0, 220, 0) : cv::Scalar(128, 128, 128), 2);
+        // softmax (модель отдаёт логиты)
+        float mx = *std::max_element(logits.begin(), logits.end());
+        double sum = 0.0;
+        for (float& v : logits)
+        {
+            v = std::exp(v - mx);
+            sum += v;
+        }
+        int best = (int)(std::max_element(logits.begin(), logits.end()) -
+                         logits.begin());
+        float score = (float)(logits[best] / sum);
 
-    if (accepted)
-    {
-        BlobMetaData meta;
-        meta.id = best;
-        meta.center = { frame.cols / 2.0f, frame.rows / 2.0f };
-        meta.area = score;               // score в поле area (0..1)
-        meta.confidence = score;
-        meta.boundingBox = { 0, 0, frame.cols, frame.rows };
-        metadata.push_back(meta);
+        std::string label = best < (int)params_.classNames.size()
+                                ? params_.classNames[best]
+                                : "class" + std::to_string(best);
+        char text[128];
+        snprintf(text, sizeof(text), "%s %.2f", label.c_str(), score);
+        const bool accepted = score >= params_.scoreThreshold;
+        const cv::Scalar color = accepted ? cv::Scalar(0, 220, 0) : cv::Scalar(128, 128, 128);
+
+        if (wholeFrame)
+        {
+            if (accepted)
+            {
+                constexpr int margin = 3;
+                const cv::Rect classificationBox(
+                    margin, margin,
+                    std::max(1, frame.cols - margin * 2),
+                    std::max(1, frame.rows - margin * 2));
+                cv::rectangle(result, classificationBox, color, 3);
+            }
+            cv::putText(result, text, { 10, 30 + 24 * textLine++ }, cv::FONT_HERSHEY_SIMPLEX,
+                        0.9, color, 2);
+        }
+        else
+        {
+            cv::rectangle(result, area, color, accepted ? 2 : 1);
+            const cv::Point origin(area.x + 2, std::max(14, area.y - 4));
+            cv::putText(result, text, origin, cv::FONT_HERSHEY_SIMPLEX, 0.5, color, 1);
+        }
+
+        if (accepted)
+        {
+            BlobMetaData meta;
+            meta.id = best;
+            meta.center = { area.x + area.width / 2.0f, area.y + area.height / 2.0f };
+            meta.area = score;               // score в поле area (0..1)
+            meta.confidence = score;
+            meta.boundingBox = area;
+            metadata.push_back(meta);
+        }
     }
     return { result, metadata };
 }
