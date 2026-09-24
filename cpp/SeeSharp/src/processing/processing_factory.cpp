@@ -54,8 +54,10 @@ std::unique_ptr<IFrameProcessor> ProcessingFactory::createProcessor(const nlohma
         }
         case ProcessingType::Classification:
         {
-            ClassifierParams params = Automapper::mapParams<ClassifierParams>(
-                rawConfig, ConfigKeys::CLASSIFICATION_CONFIG_ID);
+            // config.json старой установки не содержит секцию classification
+            ClassifierParams params = rawConfig.value(
+                ConfigKeys::CLASSIFICATION_CONFIG_ID, nlohmann::json::object())
+                .get<ClassifierParams>();
             std::unique_ptr<IFrameProcessor> regionSource;
             if (params.regionMode == ClassifierRegionMode::Blob)
             {
@@ -78,13 +80,13 @@ std::unique_ptr<IFrameProcessor> ProcessingFactory::createProcessor(const nlohma
 #ifdef MTV3_BOARD
         case ProcessingType::ObjectDetection:
         {
-            YoloParams params = rawConfig.at("object_detection").get<YoloParams>();
+            YoloParams params = rawConfig.value("object_detection", nlohmann::json::object()).get<YoloParams>();
             return std::make_unique<RknnYoloProcessor>(params);
         }
 #else
         case ProcessingType::ObjectDetection:
         {
-            YoloParams params = rawConfig.at("object_detection").get<YoloParams>();
+            YoloParams params = rawConfig.value("object_detection", nlohmann::json::object()).get<YoloParams>();
             return std::make_unique<YoloProcessor>(params);
         }
 #endif

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <stdexcept>
 
@@ -35,6 +36,9 @@ ClassifierProcessor::ClassifierProcessor(const ClassifierParams& params,
         throw std::runtime_error("ClassifierProcessor: mean/std must have 3 values");
     if (params_.centerCrop && params_.resizeSize < params_.inputSize)
         throw std::runtime_error("ClassifierProcessor: resize_size must be >= input_size");
+    if (!std::filesystem::is_regular_file(params_.modelOnnx))
+        throw std::runtime_error("ClassifierProcessor: model " + params_.modelOnnx +
+            " not found: train or upload a model in the Training tab and activate it");
     net_ = cv::dnn::readNetFromONNX(params_.modelOnnx);
     if (net_.empty())
         throw std::runtime_error("ClassifierProcessor: can't load " +

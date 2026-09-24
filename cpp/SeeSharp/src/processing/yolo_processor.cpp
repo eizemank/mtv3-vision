@@ -1,7 +1,9 @@
 #include "processing/yolo_processor.hpp"
 
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <stdexcept>
 
 #include <opencv2/imgproc.hpp>
@@ -10,16 +12,23 @@ YoloProcessor::YoloProcessor(const YoloParams& params) : params_(params)
 {
     if (!params_.classNamesFile.empty())
     {
+        // Метки нужны только для подписей: без файла детектор работает,
+        // объекты подписываются номером класса
         std::ifstream labels(params_.classNamesFile);
         if (!labels)
-            throw std::runtime_error("YoloProcessor: can't load " +
-                                     params_.classNamesFile);
+            std::cerr << "YoloProcessor: class names file " << params_.classNamesFile
+                      << " not found, using class numbers" << std::endl;
         std::string label;
         while (std::getline(labels, label))
             if (!label.empty())
                 params_.classNames.push_back(label);
     }
     params_.maxObjects = std::clamp(params_.maxObjects, 1, 100);
+    // readNetFromONNX на отсутствующем файле бросает невнятный cv::Exception
+    if (!std::filesystem::is_regular_file(params_.modelOnnx))
+        throw std::runtime_error("YoloProcessor: model " + params_.modelOnnx +
+            " not found (download: cmake --build . --target download_yolo11n, "
+            "then install yolo11n.onnx and coco.names next to config.json)");
     net_ = cv::dnn::readNetFromONNX(params_.modelOnnx);
     if (net_.empty())
         throw std::runtime_error("YoloProcessor: can't load " + params_.modelOnnx);
