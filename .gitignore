@@ -27,8 +27,14 @@ board/mtv3-rv1126/mtv3_rga_rknn
 common/models/*.pt
 common/models/*.onnx
 common/models/*.rknn
+common/models/*.classes.json
+common/models/latest.json
 dataset.txt
 q_*.jpg
+
+# --- датасеты и модели вкладки «Обучение» (training.dataset_dir / models_dir) ---
+datasets/
+models/
 
 # --- Образы/дистрибутивы ---
 *.img
