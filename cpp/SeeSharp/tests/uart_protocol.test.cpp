@@ -2,8 +2,9 @@
 // Build and run from cpp/SeeSharp (see README.md, "Tests"):
 //   g++ -std=c++17 -I include -I third_party -I /usr/include/opencv4
 //       tests/uart_protocol.test.cpp src/transport/binary_uart_transport.cpp
-//       src/transport/dxl_uart_transport.cpp
+//       src/transport/dxl_uart_transport.cpp src/platform/serial.cpp
 //       -lopencv_core -pthread -lutil -o /tmp/uart-protocol-test
+//   (or: sh board/host/run_tests.sh from the repository root)
 //   /tmp/uart-protocol-test
 // The same pure checks run on the device from the web UI developer mode.
 #include "diagnostics/uart_unit_tests.hpp"

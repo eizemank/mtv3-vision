@@ -52,7 +52,10 @@ Run `node tests/blob_color_picker.test.cjs` from this directory (Node.js and g++
 required). This checks conversions, legacy migration and native/editor parity.
 Append an output HTML path to generate a standalone browser interaction test;
 a successful test sets `body[data-test="PASS"]`.
-The native mask test also requires OpenCV core:
+`node tests/param_meta.test.cjs` checks the parameter metadata of the web form
+(`include/web/param_meta_js.hpp`): dropdown options, numeric steps, the
+`fieldRow` renderer and that every English label/hint has a Russian
+counterpart. The native mask test also requires OpenCV core:
 
 ```bash
 g++ -std=c++17 -I include -I /usr/include/opencv4 tests/blob_color_mask.test.cpp -lopencv_core -o /tmp/blob-color-mask-test
@@ -70,9 +73,27 @@ Host test, including the binary and DXL transports on a pty pair:
 ```bash
 g++ -std=c++17 -I include -I third_party -I /usr/include/opencv4 tests/uart_protocol.test.cpp \
     src/transport/binary_uart_transport.cpp src/transport/dxl_uart_transport.cpp \
-    -lopencv_core -pthread -lutil -o /tmp/uart-protocol-test
+    src/platform/serial.cpp -lopencv_core -pthread -lutil -o /tmp/uart-protocol-test
 /tmp/uart-protocol-test
 ```
+
+`sh board/host/run_tests.sh` from the repository root runs this test, the blob
+mask test and all `tests/*.test.cjs` in one go.
+
+## Platform layer
+`include/platform/` hides the OS differences behind one API (POSIX branch is
+the one built and tested; the `_WIN32` branches are kept for a possible native
+Windows build but are not compiled — on Windows the host UI runs in WSL):
+
+- `socket.hpp` — BSD sockets vs WinSock2 (`socket_t`, close, timeouts,
+  non-blocking, poll) for the HTTP server, UDP and WebSocket transports;
+- `serial.hpp` — `SerialPort`: termios vs Win32 COM port (binary UART,
+  USB stream, self-test loopback);
+- `process.hpp` — `ChildProcess`: fork/execve vs CreateProcess + Job Object
+  (python trainer).
+
+Linux-only diagnostics (`/proc` port users, kernel console check) would report
+SKIP on Windows.
 
 Run `node tests/dev_mode_ui.test.cjs` to check the UART log and developer-mode
 JS helpers.

@@ -8,10 +8,7 @@
 #include <fstream>
 #include <regex>
 #include <sstream>
-
-#include <sys/socket.h>
-#include <sys/time.h>
-#include <unistd.h>
+#include <thread>
 
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
@@ -1243,7 +1240,7 @@ void TrainingService::captureLoop(CaptureRequest request)
         if (shot + 1 < request.count && request.intervalMs > 0)
         {
             for (int waited = 0; waited < request.intervalMs && !captureStop_; waited += 20)
-                usleep(20 * 1000);
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }
     }
     std::lock_guard<std::mutex> lock(mutex_);
@@ -1253,7 +1250,7 @@ void TrainingService::captureLoop(CaptureRequest request)
 
 // ------------------------------------------------------------------- upload
 
-void TrainingService::receiveUpload(int socket, const std::string& headers,
+void TrainingService::receiveUpload(platform::socket_t socket, const std::string& headers,
                                     const std::string& prefix, long contentLength,
                                     HttpReply& reply)
 {
@@ -1285,18 +1282,16 @@ void TrainingService::receiveUpload(int socket, const std::string& headers,
         jsonReply(reply, errorJson("cannot write to models_dir"), 500);
         return;
     }
-    timeval timeout{};
-    timeout.tv_sec = 10;
-    setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    platform::socketSetReceiveTimeout(socket, 10000);
 
     long received = static_cast<long>(std::min<size_t>(prefix.size(), static_cast<size_t>(contentLength)));
     out.write(prefix.data(), received);
     std::vector<char> buffer(64 * 1024);
     while (received < contentLength && out)
     {
-        const ssize_t got = read(socket, buffer.data(),
+        const long got = platform::socketRecv(socket, buffer.data(),
                                  std::min<size_t>(buffer.size(), static_cast<size_t>(contentLength - received)));
-        if (got < 0 && errno == EINTR)
+        if (got < 0 && platform::socketInterrupted(platform::socketError()))
             continue;
         if (got <= 0)
             break;

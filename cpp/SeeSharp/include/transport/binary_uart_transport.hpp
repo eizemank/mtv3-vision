@@ -8,6 +8,7 @@
 #include <string>
 #include <thread>
 
+#include "platform/serial.hpp"
 #include "transport/vision_frame.hpp"
 
 class BinaryUartTransport
@@ -16,7 +17,7 @@ public:
     BinaryUartTransport(std::string device, int baud, size_t maxObjects);
     ~BinaryUartTransport();
 
-    bool isOpen() const { return fd_ >= 0; }
+    bool isOpen() const { return port_.isOpen(); }
     void publish(const VisionFrame& frame);
 
 private:
@@ -29,7 +30,7 @@ private:
     std::string device_;
     int baud_;
     size_t maxObjects_;
-    int fd_ = -1;
+    platform::SerialPort port_;
     std::atomic<bool> running_{true};
     std::mutex mutex_;
     std::condition_variable ready_;

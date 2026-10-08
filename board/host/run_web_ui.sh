@@ -12,12 +12,17 @@ ROOT="$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)"
 SOURCE="$ROOT/cpp/SeeSharp"
 BUILD="${SEESHARP_HOST_BUILD:-$HOME/.cache/seesharp/build-host-ui}"
 DOWNLOAD_YOLO=false
-if [ "${1:-}" = "--download-yolo" ]; then
-    DOWNLOAD_YOLO=true
-elif [ "$#" -gt 0 ]; then
-    echo "Usage: $0 [--download-yolo]" >&2
-    exit 2
-fi
+BUILD_ONLY=false
+BUILD_TYPE="${SEESHARP_BUILD_TYPE:-Release}"
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --download-yolo) DOWNLOAD_YOLO=true ;;
+        --build-only) BUILD_ONLY=true ;;
+        --debug) BUILD_TYPE=Debug ;;
+        *) echo "Usage: $0 [--download-yolo] [--build-only] [--debug]" >&2; exit 2 ;;
+    esac
+    shift
+done
 
 missing=""
 for command in cmake c++ pkg-config python3; do
@@ -28,13 +33,12 @@ done
 if [ -n "$missing" ]; then
     echo "Missing host build tools:$missing" >&2
     echo "Install them on Ubuntu/Debian/WSL:" >&2
-    echo "  sudo apt update" >&2
-    echo "  sudo apt install -y build-essential cmake pkg-config libopencv-dev nlohmann-json3-dev python3" >&2
+    echo "  sh board/host/setup_ubuntu.sh" >&2
     exit 1
 fi
 if ! pkg-config --exists opencv4; then
     echo "OpenCV development files are missing." >&2
-    echo "Install them with: sudo apt install -y libopencv-dev" >&2
+    echo "Install them with: sh board/host/setup_ubuntu.sh (or: sudo apt install -y libopencv-dev)" >&2
     exit 1
 fi
 
@@ -45,8 +49,12 @@ if [ -f "$BUILD/CMakeCache.txt" ] &&
     rm -rf "$BUILD/CMakeFiles"
 fi
 
-cmake -S "$SOURCE" -B "$BUILD" -DHOST_WEB_UI=ON -DCMAKE_BUILD_TYPE=Release
+cmake -S "$SOURCE" -B "$BUILD" -DHOST_WEB_UI=ON -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
 cmake --build "$BUILD" --parallel "${SEESHARP_BUILD_JOBS:-4}"
+if [ "$BUILD_ONLY" = true ]; then
+    echo "Built: $BUILD/mainCV"
+    exit 0
+fi
 
 if [ "$DOWNLOAD_YOLO" = true ]; then
     for command in curl python3; do

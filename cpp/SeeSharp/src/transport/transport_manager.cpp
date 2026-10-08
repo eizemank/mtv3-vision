@@ -20,6 +20,8 @@ namespace
 // На CM5 /dev/serial0 может указывать на отладочный UART (ttyAMA10);
 // GPIO14/15 после setup_uart.sh — это ttyAMA0
 constexpr const char* kDefaultUart = "/dev/ttyAMA0";
+#elif defined(_WIN32)
+constexpr const char* kDefaultUart = "COM3";
 #else
 constexpr const char* kDefaultUart = "/dev/serial0";
 #endif

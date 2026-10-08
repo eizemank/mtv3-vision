@@ -22,8 +22,12 @@ if((MTV3_BOARD AND RASPBERRY_CM5) OR
    (RASPBERRY_CM5 AND HOST_WEB_UI))
     message(FATAL_ERROR "MTV3_BOARD, RASPBERRY_CM5 and HOST_WEB_UI are mutually exclusive")
 endif()
+# Windows: хостовая сборка запускается через WSL (board/host/run_web_ui.ps1).
+# Нативная сборка не поддерживается: ветки _WIN32 в include/platform/ написаны,
+# но не собирались; MSVC к тому же не примет встроенную web-страницу (один
+# строковый литерал ~170 КБ > лимита 64 КБ, C1091).
 if(HOST_WEB_UI AND WIN32)
-    message(FATAL_ERROR "HOST_WEB_UI currently requires Linux or WSL")
+    message(FATAL_ERROR "HOST_WEB_UI on Windows is built inside WSL: run board/host/run_web_ui.ps1")
 endif()
 
 find_package(OpenCV REQUIRED)
@@ -94,6 +98,16 @@ endif()
 
 target_link_libraries(mainCV PRIVATE ${OpenCV_LIBS}
     nlohmann_json::nlohmann_json Threads::Threads)
+if(WIN32)
+    # WinSock2 для HTTP/UDP/WebSocket; _WIN32_WINNT >= Vista ради inet_pton/WSAPoll
+    target_compile_definitions(mainCV PRIVATE _WIN32_WINNT=0x0601 WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_link_libraries(mainCV PRIVATE ws2_32)
+    # Запуск mainCV.exe вне MSYS2-оболочки: без зависимости от libgcc/libstdc++ DLL
+    option(SEESHARP_STATIC_RUNTIME "Link libgcc/libstdc++ statically (MinGW)" ON)
+    if(SEESHARP_STATIC_RUNTIME AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        target_link_options(mainCV PRIVATE -static-libgcc -static-libstdc++)
+    endif()
+endif()
 target_include_directories(mainCV PRIVATE
     ${OpenCV_INCLUDE_DIRS}
     ${CMAKE_SOURCE_DIR}/include)

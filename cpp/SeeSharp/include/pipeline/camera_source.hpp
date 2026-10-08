@@ -12,10 +12,17 @@
 
 #include "pipeline/i_frame_source.hpp"
 
+// Бэкенд захвата хост-камеры: V4L2 на Linux, DirectShow на Windows
+#ifdef _WIN32
+constexpr int kDefaultCameraBackend = cv::CAP_DSHOW;
+#else
+constexpr int kDefaultCameraBackend = cv::CAP_V4L2;
+#endif
+
 class CameraSource : public IFrameSource
 {
 public:
-    explicit CameraSource(int device = 0, int backend = cv::CAP_V4L2,
+    explicit CameraSource(int device = 0, int backend = kDefaultCameraBackend,
                           int width = 0, int height = 0, int requestedFps = 0,
                           bool useMjpeg = false)
         : device_(device), backend_(backend), cap_(device, backend)

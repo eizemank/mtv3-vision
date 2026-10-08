@@ -1,5 +1,6 @@
 param(
-    [switch]$DownloadYolo
+    [switch]$DownloadYolo,
+    [switch]$BuildOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -58,6 +59,8 @@ if ($LASTEXITCODE -ne 0 -or -not $wslRepository) {
 Write-Host "Starting SeeSharp host UI in WSL..."
 Write-Host "Distribution: $distribution"
 Write-Host "Open http://127.0.0.1:8081/"
-$launcherArgument = if ($DownloadYolo) { " --download-yolo" } else { "" }
-& wsl.exe -d $distribution -- bash -lc "cd '$wslRepository' && exec sh board/host/run_web_ui.sh$launcherArgument"
+$arguments = ""
+if ($DownloadYolo) { $arguments += " --download-yolo" }
+if ($BuildOnly) { $arguments += " --build-only" }
+& wsl.exe -d $distribution -- bash -lc "cd '$wslRepository' && exec sh board/host/run_web_ui.sh$arguments"
 exit $LASTEXITCODE

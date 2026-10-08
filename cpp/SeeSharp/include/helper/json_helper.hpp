@@ -109,7 +109,7 @@ inline void from_json(const nlohmann::json& j, LineParams& p)
 
     j.at(ConfigKeys::HOUGH_RHO).get_to(p.rho);
     j.at(ConfigKeys::HOUGH_THETA).get_to(p.theta);
-    j.at(ConfigKeys::HOUGH_THETA).get_to(p.threshold);
+    j.at(ConfigKeys::HOUGH_THRESHOLD).get_to(p.threshold);
     j.at(ConfigKeys::HOUGH_MIN_LINE_LENGTH).get_to(p.minLineLength);
     j.at(ConfigKeys::HOUGH_MAX_LINE_GAP).get_to(p.maxLineGap);
     p.minAngle = j.value("min_angle", -180.0);
@@ -119,6 +119,24 @@ inline void from_json(const nlohmann::json& j, LineParams& p)
     p.roiWidth = j.value("roi_width", 1.0);
     p.roiHeight = j.value("roi_height", 1.0);
     p.maxLines = j.value("max_lines", 100);
+
+    // cv::Canny / cv::HoughLinesP проверяют аргументы через CV_Assert и
+    // бросают исключение из потока обработки кадров -> падение процесса.
+    // Проверяем здесь, чтобы /apply вернул понятную ошибку, а старый
+    // процессор остался работать.
+    if (p.apertureSize != 3 && p.apertureSize != 5 && p.apertureSize != 7)
+        throw std::invalid_argument(
+            "line_detection.canny_aperture_size must be 3, 5 or 7");
+    if (!(p.rho > 0.0) || !(p.theta > 0.0))
+        throw std::invalid_argument(
+            "line_detection.hough_rho and hough_theta must be positive");
+    if (p.threshold < 1)
+        throw std::invalid_argument(
+            "line_detection.hough_threshold must be at least 1");
+    if (p.roiWidth <= 0.0 || p.roiHeight <= 0.0 || p.roiX < 0.0 || p.roiY < 0.0 ||
+        p.roiX >= 1.0 || p.roiY >= 1.0 || p.roiWidth > 1.0 || p.roiHeight > 1.0)
+        throw std::invalid_argument(
+            "line_detection.roi_* must be fractions of the frame: x,y in [0,1), width,height in (0,1]");
 }
 
 inline void from_json(const nlohmann::json& j, CircleParams& p)

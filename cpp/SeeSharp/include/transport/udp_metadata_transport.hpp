@@ -6,6 +6,7 @@
 #include <string>
 #include <thread>
 
+#include "platform/socket.hpp"
 #include "transport/vision_frame.hpp"
 
 class UdpMetadataTransport
@@ -14,14 +15,14 @@ public:
     UdpMetadataTransport(std::string host, uint16_t port);
     ~UdpMetadataTransport();
 
-    bool isOpen() const { return socketFd_ >= 0; }
+    bool isOpen() const { return platform::socketValid(socketFd_); }
     void publish(const VisionFrame& frame);
 
 private:
     void run();
     void sendFrame(const VisionFrame& frame);
 
-    int socketFd_ = -1;
+    platform::socket_t socketFd_ = platform::kInvalidSocket;
     uint32_t address_ = 0;
     uint16_t port_ = 0;
     bool running_ = false;

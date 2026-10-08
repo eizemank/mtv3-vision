@@ -10,15 +10,10 @@
 #include <utility>
 #include <vector>
 
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <netinet/in.h>
-#include <poll.h>
-#include <sys/socket.h>
-#include <sys/time.h>
-#include <unistd.h>
-
 #include "transport/metadata_json.hpp"
+
+using platform::socket_t;
+using platform::socketValid;
 
 namespace
 {
@@ -128,12 +123,12 @@ std::string base64(const std::array<uint8_t, 20>& input)
     return output;
 }
 
-bool sendAll(int socketFd, const uint8_t* data, size_t size)
+bool sendAll(socket_t socketFd, const uint8_t* data, size_t size)
 {
     size_t offset = 0;
     while (offset < size)
     {
-        const ssize_t written = send(socketFd, data + offset, size - offset, MSG_NOSIGNAL);
+        const long written = platform::socketSend(socketFd, data + offset, size - offset);
         if (written <= 0)
             return false;
         offset += static_cast<size_t>(written);
@@ -141,16 +136,14 @@ bool sendAll(int socketFd, const uint8_t* data, size_t size)
     return true;
 }
 
-bool performHandshake(int socketFd)
+bool performHandshake(socket_t socketFd)
 {
-    timeval timeout{1, 0};
-    setsockopt(socketFd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-    setsockopt(socketFd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    platform::socketSetTimeouts(socketFd, 1000);
     std::string request;
     std::array<char, 2048> buffer{};
     while (request.find("\r\n\r\n") == std::string::npos && request.size() < 8192)
     {
-        const ssize_t count = recv(socketFd, buffer.data(), buffer.size(), 0);
+        const long count = platform::socketRecv(socketFd, buffer.data(), buffer.size());
         if (count <= 0)
             return false;
         request.append(buffer.data(), static_cast<size_t>(count));
@@ -177,7 +170,7 @@ bool performHandshake(int socketFd)
                    response.size());
 }
 
-bool sendTextFrame(int socketFd, const std::string& payload)
+bool sendTextFrame(socket_t socketFd, const std::string& payload)
 {
     std::vector<uint8_t> frame;
     frame.reserve(payload.size() + 10);
@@ -206,11 +199,11 @@ WebSocketMetadataTransport::WebSocketMetadataTransport(std::string bindAddress,
                                                        uint16_t port)
     : bindAddress_(std::move(bindAddress)), port_(port)
 {
+    platform::socketsInit();
     listenerFd_ = socket(AF_INET, SOCK_STREAM, 0);
-    if (listenerFd_ < 0)
+    if (!socketValid(listenerFd_))
         return;
-    int reuse = 1;
-    setsockopt(listenerFd_, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+    platform::socketSetReuseAddress(listenerFd_);
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_port = htons(port_);
@@ -222,11 +215,11 @@ WebSocketMetadataTransport::WebSocketMetadataTransport(std::string bindAddress,
         bind(listenerFd_, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0 ||
         listen(listenerFd_, 8) != 0)
     {
-        close(listenerFd_);
-        listenerFd_ = -1;
+        platform::socketClose(listenerFd_);
+        listenerFd_ = platform::kInvalidSocket;
         return;
     }
-    fcntl(listenerFd_, F_SETFL, fcntl(listenerFd_, F_GETFL) | O_NONBLOCK);
+    platform::socketSetNonBlocking(listenerFd_);
     worker_ = std::thread(&WebSocketMetadataTransport::run, this);
     std::cout << "WebSocket metadata: ws://" << bindAddress_ << ':' << port_
               << std::endl;
@@ -238,13 +231,12 @@ WebSocketMetadataTransport::~WebSocketMetadataTransport()
     ready_.notify_all();
     if (worker_.joinable())
         worker_.join();
-    if (listenerFd_ >= 0)
-        close(listenerFd_);
+    platform::socketClose(listenerFd_);
 }
 
 void WebSocketMetadataTransport::publish(const VisionFrame& frame)
 {
-    if (listenerFd_ < 0)
+    if (!socketValid(listenerFd_))
         return;
     std::lock_guard<std::mutex> lock(mutex_);
     pendingFrame_ = frame;
@@ -254,18 +246,18 @@ void WebSocketMetadataTransport::publish(const VisionFrame& frame)
 
 void WebSocketMetadataTransport::run()
 {
-    std::vector<int> clients;
+    std::vector<socket_t> clients;
     while (running_)
     {
         while (true)
         {
-            const int client = accept(listenerFd_, nullptr, nullptr);
-            if (client < 0)
+            const socket_t client = accept(listenerFd_, nullptr, nullptr);
+            if (!socketValid(client))
                 break;
             if (performHandshake(client))
                 clients.push_back(client);
             else
-                close(client);
+                platform::socketClose(client);
         }
 
         VisionFrame frame;
@@ -285,13 +277,13 @@ void WebSocketMetadataTransport::run()
             continue;
         const std::string payload = serializeVisionFrameJson(frame).dump();
         clients.erase(std::remove_if(clients.begin(), clients.end(),
-            [&](int client) {
+            [&](socket_t client) {
                 if (sendTextFrame(client, payload))
                     return false;
-                close(client);
+                platform::socketClose(client);
                 return true;
             }), clients.end());
     }
-    for (int client : clients)
-        close(client);
+    for (socket_t client : clients)
+        platform::socketClose(client);
 }

@@ -8,47 +8,8 @@
 
 #include <algorithm>
 #include <iostream>
-#include <termios.h>
 #include <utility>
-#include <unistd.h>
-#include <fcntl.h>
 #include <vector>
-
-namespace
-{
-speed_t baudConstant(int baud)
-{
-    switch (baud)
-    {
-        case 9600: return B9600;
-        case 19200: return B19200;
-        case 38400: return B38400;
-        case 57600: return B57600;
-        case 115200: return B115200;
-#ifdef B230400
-        case 230400: return B230400;
-#endif
-#ifdef B460800
-        case 460800: return B460800;
-#endif
-#ifdef B500000
-        case 500000: return B500000;
-#endif
-#ifdef B921600
-        case 921600: return B921600;
-#endif
-#ifdef B1000000
-        case 1000000: return B1000000;
-#endif
-        default: return 0;
-    }
-}
-
-std::string errnoText(const char* call)
-{
-    return std::string(call) + ": " + std::strerror(errno);
-}
-}
 
 BinaryUartTransport::BinaryUartTransport(std::string device, int baud,
                                          size_t maxObjects)
@@ -73,9 +34,9 @@ BinaryUartTransport::~BinaryUartTransport()
         worker_.join();
     if (rxMonitor_.joinable())
         rxMonitor_.join();
-    if (fd_ >= 0)
+    if (port_.isOpen())
     {
-        close(fd_);
+        port_.close();
         UartTxLog::instance().state("Binary TX stopped", device_);
         UartRxLog::instance().state("Binary RX monitor stopped", device_);
     }
@@ -85,9 +46,7 @@ BinaryUartTransport::~BinaryUartTransport()
 // молча копить кадры без рабочего потока.
 bool BinaryUartTransport::fail(const std::string& reason)
 {
-    if (fd_ >= 0)
-        close(fd_);
-    fd_ = -1;
+    port_.close();
     const std::string message = "Binary UART " + device_ + ": " + reason;
     std::cerr << message << std::endl;
     UartTxLog::instance().state("Failed to open/configure binary UART", device_);
@@ -99,35 +58,21 @@ bool BinaryUartTransport::fail(const std::string& reason)
 
 bool BinaryUartTransport::openPort()
 {
-    const speed_t speed = baudConstant(baud_);
-    if (!speed)
+    if (!platform::SerialPort::baudSupported(baud_))
         return fail("unsupported baud " + std::to_string(baud_) +
-                    " (supported: 9600..115200, 230400, 460800, 500000, 921600, 1000000)");
-    // O_RDWR: RX монитор показывает эхо/петлю; протокол сам по себе только TX
-    fd_ = open(device_.c_str(), O_RDWR | O_NOCTTY);
-    if (fd_ < 0)
-        return fail(errnoText("open"));
-    termios options{};
-    if (tcgetattr(fd_, &options) != 0)
-        return fail(errnoText("tcgetattr"));
-    cfmakeraw(&options);
-    cfsetispeed(&options, speed);
-    cfsetospeed(&options, speed);
-    // cfmakeraw не сбрасывает унаследованные стоп-биты/аппаратный flow control
-    options.c_cflag &= ~(CSTOPB | CRTSCTS);
-    options.c_cflag |= CLOCAL | CREAD;
-    options.c_cc[VMIN] = 0;
-    options.c_cc[VTIME] = 1;          // read() возвращается через 100 мс
-    if (tcsetattr(fd_, TCSANOW, &options) != 0)
-        return fail(errnoText("tcsetattr"));
-    tcflush(fd_, TCIFLUSH);
+                    " (supported: " + platform::SerialPort::supportedBauds() + ")");
+    // чтение+запись: RX монитор показывает эхо/петлю; протокол сам по себе
+    // только TX. read() возвращается через 100 мс без данных.
+    std::string error;
+    if (!port_.open(device_, baud_, false, 100, error))
+        return fail(error);
     std::cout << "UART binary: " << device_ << " @ " << baud_ << std::endl;
     return true;
 }
 
 void BinaryUartTransport::publish(const VisionFrame& frame)
 {
-    if (fd_ < 0)
+    if (!port_.isOpen())
         return;
     UartTxLog::instance().count("frames_published");
     std::lock_guard<std::mutex> lock(mutex_);
@@ -163,12 +108,10 @@ void BinaryUartTransport::monitorRx()
     while (running_)
     {
         uint8_t chunk[256];
-        const ssize_t count = read(fd_, chunk, sizeof(chunk));
+        const long count = port_.read(chunk, sizeof(chunk));
         if (count < 0)
         {
-            if (errno == EINTR || errno == EAGAIN)
-                continue;
-            UartRxLog::instance().event("ERROR", "[BIN] " + errnoText("read"));
+            UartRxLog::instance().event("ERROR", "[BIN] " + port_.lastError());
             UartRxLog::instance().state("Binary RX monitor failed", device_);
             return;
         }
@@ -204,16 +147,14 @@ void BinaryUartTransport::sendFrame(const VisionFrame& frame)
     size_t offset = 0;
     while (offset < packet.size())
     {
-        const ssize_t written = write(fd_, packet.data() + offset,
-                                      packet.size() - offset);
-        if (written < 0 && errno == EINTR)
-            continue;
+        const long written = port_.write(packet.data() + offset,
+                                         packet.size() - offset);
         if (written <= 0)
         {
             UartTxLog::instance().count("write_errors");
             UartTxLog::instance().state("Binary TX write failed", device_);
             UartTxLog::instance().event("ERROR", "[BIN] " +
-                (written < 0 ? errnoText("write") : std::string("write returned 0")));
+                (written < 0 ? port_.lastError() : std::string("write timed out")));
             return;
         }
         UartTxLog::instance().record(packet.data() + offset,

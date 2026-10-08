@@ -7,16 +7,11 @@
 #include <iostream>
 #include <vector>
 
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <poll.h>
-#include <termios.h>
-#include <unistd.h>
-
 #include <nlohmann/json.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
+#include "platform/socket.hpp"   // htonl
 #include "transport/metadata_json.hpp"
 
 namespace
@@ -72,26 +67,19 @@ void UsbStreamTransport::publish(const VisionFrame& frame, const cv::Mat& image)
 
 bool UsbStreamTransport::openDevice()
 {
-    if (deviceFd_ >= 0)
+    if (port_.isOpen())
         return true;
-    deviceFd_ = open(device_.c_str(), O_WRONLY | O_NOCTTY | O_NONBLOCK);
-    if (deviceFd_ < 0)
+    // только запись, неблокирующая; скорость USB CDC не трогаем (baud 0)
+    std::string error;
+    if (!port_.open(device_, 0, true, 0, error))
         return false;
-    termios tty{};
-    if (tcgetattr(deviceFd_, &tty) == 0)
-    {
-        cfmakeraw(&tty);
-        tcsetattr(deviceFd_, TCSANOW, &tty);
-    }
     std::cout << "USB stream: " << device_ << std::endl;
     return true;
 }
 
 void UsbStreamTransport::closeDevice()
 {
-    if (deviceFd_ >= 0)
-        close(deviceFd_);
-    deviceFd_ = -1;
+    port_.close();
 }
 
 bool UsbStreamTransport::writeRecord(uint8_t messageType, uint32_t frameId,
@@ -113,19 +101,12 @@ bool UsbStreamTransport::writeRecord(uint8_t messageType, uint32_t frameId,
     size_t offset = 0;
     while (offset < record.size())
     {
-        const ssize_t written = write(deviceFd_, record.data() + offset,
-                                      record.size() - offset);
+        const long written = port_.write(record.data() + offset,
+                                         record.size() - offset);
         if (written > 0)
             offset += static_cast<size_t>(written);
-        else if (written < 0 && errno == EINTR)
-            continue;
-        else if (written < 0 && errno == EAGAIN)
-        {
-            pollfd descriptor{deviceFd_, POLLOUT, 0};
-            if (poll(&descriptor, 1, 100) > 0)
-                continue;
-            return false;
-        }
+        else if (written == 0)
+            return false;                 // устройство не готово (хост не читает)
         else
         {
             closeDevice();

@@ -15,14 +15,13 @@
 #include <sstream>
 #include <thread>
 
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
+#include "platform/serial.hpp"
+#include "platform/socket.hpp"
+
+#ifndef _WIN32
 #include <sys/stat.h>
-#include <sys/time.h>
-#include <termios.h>
 #include <unistd.h>
+#endif
 
 namespace self_test
 {
@@ -39,11 +38,6 @@ struct Outcome
 Outcome pass(std::string message) { return {"PASS", std::move(message)}; }
 Outcome fail(std::string message) { return {"FAIL", std::move(message)}; }
 Outcome skip(std::string message) { return {"SKIP", std::move(message)}; }
-
-std::string errnoText(const char* call)
-{
-    return std::string(call) + ": " + std::strerror(errno);
-}
 
 std::string canonical(const std::string& device)
 {
@@ -88,32 +82,6 @@ UartPort configuredPort(const nlohmann::json& config)
     return fallback;
 }
 
-speed_t baudConstant(int baud)
-{
-    switch (baud)
-    {
-        case 9600: return B9600;
-        case 19200: return B19200;
-        case 38400: return B38400;
-        case 57600: return B57600;
-        case 115200: return B115200;
-        case 230400: return B230400;
-#ifdef B460800
-        case 460800: return B460800;
-#endif
-#ifdef B500000
-        case 500000: return B500000;
-#endif
-#ifdef B921600
-        case 921600: return B921600;
-#endif
-#ifdef B1000000
-        case 1000000: return B1000000;
-#endif
-        default: return 0;
-    }
-}
-
 std::string readFile(const fs::path& path)
 {
     std::ifstream input(path, std::ios::binary);
@@ -126,33 +94,32 @@ std::string readFile(const fs::path& path)
 
 bool httpGet(int port, const std::string& path, std::string& body, std::string& error)
 {
-    const int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0)
+    platform::socketsInit();
+    const platform::socket_t fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (!platform::socketValid(fd))
     {
-        error = errnoText("socket");
+        error = platform::socketErrorText("socket");
         return false;
     }
-    timeval timeout{3, 0};
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    platform::socketSetTimeouts(fd, 3000);
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_port = htons(static_cast<uint16_t>(port));
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     if (connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0)
     {
-        error = errnoText("connect");
-        close(fd);
+        error = platform::socketErrorText("connect");
+        platform::socketClose(fd);
         return false;
     }
     const std::string request = "GET " + path + " HTTP/1.0\r\nHost: localhost\r\n\r\n";
-    send(fd, request.data(), request.size(), MSG_NOSIGNAL);
+    platform::socketSend(fd, request.data(), request.size());
     std::string response;
     char chunk[4096];
-    ssize_t count;
-    while ((count = read(fd, chunk, sizeof(chunk))) > 0)
+    long count;
+    while ((count = platform::socketRecv(fd, chunk, sizeof(chunk))) > 0)
         response.append(chunk, static_cast<size_t>(count));
-    close(fd);
+    platform::socketClose(fd);
     const size_t split = response.find("\r\n\r\n");
     if (split == std::string::npos)
     {
@@ -189,6 +156,17 @@ Outcome logEndpoints(const Context& context)
     return pass(summary);
 }
 
+#ifdef _WIN32
+Outcome portCheck(const Context& context)
+{
+    const UartPort port = context.uartPort ? context.uartPort() : UartPort{};
+    if (port.device.empty())
+        return fail("no UART transport is running: " + UartTxLog::instance().snapshot().state +
+                    lastError(UartTxLog::instance()));
+    return skip(port.protocol + " on " + port.device + " @ " + std::to_string(port.baud) +
+                "; console/getty/other-reader checks apply to Linux only");
+}
+#else
 // Кто ещё держит порт: getty, minicom, второй mainCV...
 std::string otherPortUsers(const std::string& device)
 {
@@ -241,6 +219,7 @@ Outcome portCheck(const Context& context)
                 (real != port.device ? " -> " + real : "") + " @ " +
                 std::to_string(port.baud) + ", no other users of the port");
 }
+#endif
 
 Outcome txActivity(const Context& context)
 {
@@ -303,28 +282,14 @@ Outcome loopback(const Context& context)
             marker.push_back(value);
     }
 
-    // Порт уже открыт транспортом: его termios не трогаем, а RX читает он —
+    // Порт уже открыт транспортом: его настройки не трогаем, а RX читает он —
     // маркер ищем в журнале RX. Иначе настраиваем и читаем порт сами.
-    const int fd = open(port.device.c_str(),
-                        active ? (O_WRONLY | O_NOCTTY) : (O_RDWR | O_NOCTTY | O_NONBLOCK));
-    if (fd < 0)
-        return fail(port.device + ": " + errnoText("open"));
-    struct Closer { int fd; ~Closer() { close(fd); } } closer{fd};
-    if (!active)
-    {
-        const speed_t speed = baudConstant(port.baud);
-        termios options{};
-        if (!speed || tcgetattr(fd, &options) != 0)
-            return fail(port.device + ": cannot configure baud " + std::to_string(port.baud));
-        cfmakeraw(&options);
-        cfsetispeed(&options, speed);
-        cfsetospeed(&options, speed);
-        options.c_cflag &= ~(CSTOPB | CRTSCTS);
-        options.c_cflag |= CLOCAL | CREAD;
-        if (tcsetattr(fd, TCSANOW, &options) != 0)
-            return fail(port.device + ": " + errnoText("tcsetattr"));
-        tcflush(fd, TCIFLUSH);
-    }
+    platform::SerialPort serial;
+    std::string openError;
+    if (!active && !platform::SerialPort::baudSupported(port.baud))
+        return fail(port.device + ": cannot configure baud " + std::to_string(port.baud));
+    if (!serial.open(port.device, active ? 0 : port.baud, active, 10, openError))
+        return fail(port.device + ": " + openError);
 
     auto& rx = UartRxLog::instance();
     uint64_t startSequence = 0;
@@ -333,9 +298,10 @@ Outcome loopback(const Context& context)
     const uint64_t echoed0 = rx.counter("rx_frames_ok");
 
     const auto started = Clock::now();
-    if (write(fd, marker.data(), marker.size()) != static_cast<ssize_t>(marker.size()))
-        return fail(port.device + ": " + errnoText("write"));
-    tcdrain(fd);
+    if (serial.write(marker.data(), marker.size()) != static_cast<long>(marker.size()))
+        return fail(port.device + ": " + (serial.lastError().empty() ? "write timed out"
+                                                                      : serial.lastError()));
+    serial.drain();
 
     const std::string markerHex = UartRxLog::toHex(marker.data(), marker.size());
     std::vector<uint8_t> received;
@@ -359,7 +325,7 @@ Outcome loopback(const Context& context)
         else
         {
             uint8_t chunk[256];
-            const ssize_t count = read(fd, chunk, sizeof(chunk));
+            const long count = serial.read(chunk, sizeof(chunk));
             if (count > 0)
                 received.insert(received.end(), chunk, chunk + count);
             found = std::search(received.begin(), received.end(),

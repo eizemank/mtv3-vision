@@ -2,21 +2,20 @@
 
 #include <utility>
 
-#include <arpa/inet.h>
-#include <sys/socket.h>
-#include <unistd.h>
-
 #include "transport/metadata_json.hpp"
+
+using platform::socketValid;
 
 UdpMetadataTransport::UdpMetadataTransport(std::string host, uint16_t port)
     : port_(port)
 {
-    socketFd_ = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0);
-    if (socketFd_ < 0 || inet_pton(AF_INET, host.c_str(), &address_) != 1)
+    platform::socketsInit();
+    socketFd_ = socket(AF_INET, SOCK_DGRAM, 0);
+    if (!socketValid(socketFd_) || !platform::socketSetNonBlocking(socketFd_) ||
+        inet_pton(AF_INET, host.c_str(), &address_) != 1)
     {
-        if (socketFd_ >= 0)
-            close(socketFd_);
-        socketFd_ = -1;
+        platform::socketClose(socketFd_);
+        socketFd_ = platform::kInvalidSocket;
     }
     else
     {
@@ -34,13 +33,12 @@ UdpMetadataTransport::~UdpMetadataTransport()
     condition_.notify_all();
     if (worker_.joinable())
         worker_.join();
-    if (socketFd_ >= 0)
-        close(socketFd_);
+    platform::socketClose(socketFd_);
 }
 
 void UdpMetadataTransport::publish(const VisionFrame& frame)
 {
-    if (socketFd_ < 0)
+    if (!socketValid(socketFd_))
         return;
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -75,6 +73,5 @@ void UdpMetadataTransport::sendFrame(const VisionFrame& frame)
     destination.sin_family = AF_INET;
     destination.sin_port = htons(port_);
     destination.sin_addr.s_addr = address_;
-    sendto(socketFd_, payload.data(), payload.size(), MSG_DONTWAIT,
-           reinterpret_cast<sockaddr*>(&destination), sizeof(destination));
+    platform::socketSendTo(socketFd_, payload.data(), payload.size(), destination);
 }

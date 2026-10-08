@@ -35,17 +35,14 @@
 #endif
 
 #if defined(MTV3_BOARD) || defined(RASPBERRY_CM5) || defined(HOST_WEB_UI)
+#include "platform/socket.hpp"
 #ifndef _WIN32
-#include <arpa/inet.h>
 #include <fcntl.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <sys/stat.h>
-#include <sys/time.h>
 #include <unistd.h>
 #endif
 
 #include <atomic>
+#include <cstdio>
 #include <condition_variable>
 #include <fstream>
 #include <functional>
@@ -101,10 +98,12 @@ static nlohmann::json runtimeConfig(nlohmann::json config)
 }
 
 #if defined(MTV3_BOARD) || defined(RASPBERRY_CM5) || defined(HOST_WEB_UI)
-static time_t cfgMtime(const char* path)
+// Время изменения файла в тиках файловой системы (0 — файла нет)
+static int64_t cfgMtime(const std::string& path)
 {
-    struct stat st{};
-    return stat(path, &st) ? 0 : st.st_mtime;
+    std::error_code error;
+    const auto time = std::filesystem::last_write_time(path, error);
+    return error ? 0 : static_cast<int64_t>(time.time_since_epoch().count());
 }
 
 // применение конфига к живому конвейеру (ставится в main); "" = успех
@@ -146,7 +145,7 @@ static bool startsWith(const std::string& text, const char (&prefix)[N])
 }
 // mtime config.json после нашего собственного сохранения: вахтёр не должен
 // перечитывать (и пересоздавать детектор) то, что сервер только что применил
-static std::atomic<time_t> gOwnSaveMtime{0};
+static std::atomic<int64_t> gOwnSaveMtime{0};
 static std::mutex gPreviewMutex;
 static std::condition_variable gPreviewInputReady;
 static std::condition_variable gPreviewJpegReady;
@@ -303,18 +302,26 @@ static std::string saveConfigAtomic(const nlohmann::json& j)
         if (!o)
             return "ошибка записи " + tmp;
     }
+#ifndef _WIN32
     int fd = open(tmp.c_str(), O_RDONLY);
     if (fd >= 0)
     {
         fsync(fd);
         close(fd);
     }
-    // бэкап предыдущего (один шаг назад)
-    rename(gConfigPath.c_str(), (gConfigPath + ".bak").c_str());
-    if (rename(tmp.c_str(), gConfigPath.c_str()))
-        return "rename failed";
+#endif
+    // бэкап предыдущего (один шаг назад); fs::rename заменяет существующий
+    // файл и на Windows (rename() из CRT там падает с EEXIST)
+    std::error_code error;
+    std::filesystem::rename(gConfigPath, gConfigPath + ".bak", error);
+    error.clear();
+    std::filesystem::rename(tmp, gConfigPath, error);
+    if (error)
+        return "rename failed: " + error.message();
+#ifndef _WIN32
     sync();
-    gOwnSaveMtime = cfgMtime(gConfigPath.c_str());
+#endif
+    gOwnSaveMtime = cfgMtime(gConfigPath);
     return "";
 }
 
@@ -325,13 +332,17 @@ static std::string saveConfigAtomic(const nlohmann::json& j)
 //   GET  /mode/<имя>  — быстрое переключение processing_mode
 static const char kPage[] = R"HTML(<!doctype html><html><head><meta charset="utf-8">
 <title>SeeSharp vision</title><style>
-body{font-family:sans-serif;background:#111;color:#eee;margin:12px;max-width:1100px}
+body{font-family:sans-serif;background:#111;color:#eee;margin:12px}
+.layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,38%);gap:16px;align-items:start}
+.side{position:sticky;top:8px;max-height:calc(100vh - 16px);overflow:auto}
+.actions{position:sticky;bottom:0;background:#111;padding:8px 0;border-top:1px solid #333;z-index:3}
+@media(max-width:1000px){.layout{grid-template-columns:1fr}.side{position:static;max-height:none;order:-1}.streams{grid-template-columns:1fr 1fr}}
 button{margin:2px;padding:6px 12px;background:#333;color:#eee;border:1px solid #555;cursor:pointer}
 button:hover{background:#464}
 button.act{background:#464;border-color:#7a7}
 button.selecting{background:#075b75;border-color:#28b4ff}
 textarea{width:100%;height:320px;background:#181818;color:#9e9;font-family:monospace;font-size:12px}
-img{max-width:100%;border:1px solid #444}.streams{display:grid;grid-template-columns:1fr 1fr;gap:8px}.streams h4{margin:4px}#st{margin-left:10px;color:#fb0}
+img{max-width:100%;border:1px solid #444}.streams{display:grid;grid-template-columns:1fr;gap:8px}.streams h4{margin:4px}#st{margin-left:10px;color:#fb0}
 .selectFrame{position:relative;display:inline-block;max-width:100%}.selectFrame img{display:block}.selectFrame canvas{position:absolute;inset:0;width:100%;height:100%;cursor:crosshair}
 .blobSampler{display:flex;align-items:center;gap:8px;margin:6px 0 10px}.blobSampler input{width:55px;background:#222;color:#eee;border:1px solid #555;padding:4px}
 details{border:1px solid #383838;margin:6px 0;background:#161616}
@@ -341,6 +352,7 @@ details details>summary{font-weight:normal;color:#9bd}
 .row{display:flex;align-items:center;gap:8px;padding:2px 0}
 .row label{flex:0 0 260px;color:#bbb;font-size:13px;cursor:help}
 .row input[type=text],.row input[type=number]{background:#222;color:#eee;border:1px solid #555;padding:3px 6px;width:190px}
+.row select{background:#222;color:#eee;border:1px solid #555;padding:3px 6px;width:204px}
 .row input[type=color]{width:38px;height:28px;padding:1px;border:1px solid #555;background:#222;cursor:pointer}
 .blobColorRow{flex-wrap:wrap}.blobColorEditor{flex:1 0 100%;display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:8px;box-sizing:border-box;background:#202020}
 .blobColorEditor label{flex:initial;display:flex;align-items:center;gap:4px}.blobColorEditor input[type=number]{width:70px}.blobColorEditor canvas{width:180px;height:180px;touch-action:none;cursor:crosshair}.blobColorEditor select{background:#222;color:#eee;padding:5px}.blobColorBounds{flex-basis:100%;display:grid;gap:6px}.blobColorChannels{display:flex;flex-wrap:wrap;gap:8px}.blobColorEditor .hint{flex-basis:100%;color:#aaa}
@@ -356,11 +368,7 @@ details details>summary{font-weight:normal;color:#9bd}
 </style></head><body>
 <h3 id="appTitle">SeeSharp vision</h3><label><span id="languageLabel">Language</span> <select id="language" onchange="setLanguage(this.value)"><option value="ru">Русский</option><option value="en">English</option></select></label>
 <label class="hint"><input type="checkbox" id="devMode"> Developer mode / Режим разработчика</label>
-<div class="streams"><div><h4 id="sourceTitle">Source</h4><div class="selectFrame"><img id="src" alt="source is not ready"><canvas id="selection"></canvas></div></div>
-<div><h4 id="resultTitle">Detection result</h4><img id="v" alt="result is not ready"></div></div><br>
-<div class="blobSampler" id="blobSampler"><span id="blobPatternLabel">Blob pattern index</span><input id="blobPattern" type="number" min="0" value="0">
-<button id="configureBlobButton" onclick="configureBlobFromSelection()">Configure blob from selected contour</button>
-<span class="hint" id="blobSelectionHint">Hold the pointer and trace the object contour</span></div>
+<div class="layout"><div class="main">
 <div id="modes"></div>
 <h4><span id="parametersTitle">Параметры</span> <span class="hint" id="parametersHint">(секция активного режима + общие)</span></h4>
 <div><label class="hint"><input type="checkbox" id="all" onchange="render()"> <span id="showAllLabel">показать все секции</span></label>
@@ -370,10 +378,10 @@ details details>summary{font-weight:normal;color:#9bd}
 <button id="uartTab" onclick="setParamTab('uart')">UART metadata</button>
 <button id="trainingTab" onclick="setParamTab('training')">Training</button></div>
 <div id="form"></div>
-<textarea id="cfg" spellcheck="false" style="display:none"></textarea><br>
-<button id="applyButton" onclick="send('/apply')">Применить (до перезапуска)</button>
+<textarea id="cfg" spellcheck="false" style="display:none"></textarea>
+<div class="actions"><button id="applyButton" onclick="send('/apply')">Применить (до перезапуска)</button>
 <button id="saveButton" onclick="send('/config')">Сохранить (постоянно)</button>
-<button id="revertButton" onclick="revert()">Откатить к сохранённому</button><span id="st"></span>
+<button id="revertButton" onclick="revert()">Откатить к сохранённому</button><span id="st"></span></div>
 <details id="uartLogPanel"><summary>UART RX log / Журнал приёма UART</summary>
 <p>CM5 RX ← controller TX. BYTES: raw data; PACKET: DXL command or binary echo; INFO/WARN/ERROR: transport events. Last 200 entries.</p>
 <button id="uartLogPause">Pause / Пауза</button>
@@ -416,6 +424,14 @@ details details>summary{font-weight:normal;color:#9bd}
 <button onclick="adminPost({op:'terminal',command:document.getElementById('admCmd').value})">Execute</button>
 <textarea id="admOut" spellcheck="false"></textarea>
 </div></details>
+</div>
+<aside class="side">
+<div class="streams"><div><h4 id="sourceTitle">Source</h4><div class="selectFrame"><img id="src" alt="source is not ready"><canvas id="selection"></canvas></div></div>
+<div><h4 id="resultTitle">Detection result</h4><img id="v" alt="result is not ready"></div></div>
+<div class="blobSampler" id="blobSampler"><span id="blobPatternLabel">Blob pattern index</span><input id="blobPattern" type="number" min="0" value="0">
+<button id="configureBlobButton" onclick="configureBlobFromSelection()">Configure blob from selected contour</button>
+<span class="hint" id="blobSelectionHint">Hold the pointer and trace the object contour</span></div>
+</aside></div>
 <script>
 )HTML"
 #include "web/dev_mode_js.hpp"
@@ -477,14 +493,15 @@ setupUartLog('uartTxLog','TX');
 const modes=['off','aruco_detection','object_detection','classification','blob_detection','line_detection','circle_detection'];
 let language='ru';
 const uiText={
-  ru:{language:'Язык',source:'Исходное видео',result:'Результат детекции',blobPattern:'Номер цветового шаблона',configureBlob:'Настроить blob по выделенному контуру',selectHint:'Удерживая кнопку, обведите контур объекта',parameters:'Параметры',parametersHint:'(активный алгоритм и общие настройки)',showAll:'показать все разделы',raw:'редактировать JSON',detectorTab:'Параметры детектора',generalTab:'Общие параметры',uartTab:'Метаданные UART',apply:'Применить',save:'Сохранить',revert:'Откатить',linkedEditor:'Редактор связанного объекта',components:'Количество blobs в связанном объекте',selectVideo:'Выбрать на видео',remove:'Удалить',drawLink:'Провести связь на видео',manualLink:'Добавить связь вручную',base:'базовый',baseLink:'Базовая связь',admin:'Системное администрирование'},
-  en:{language:'Language',source:'Source video',result:'Detection result',blobPattern:'Blob pattern index',configureBlob:'Configure blob from selected contour',selectHint:'Hold the pointer and trace the object contour',parameters:'Parameters',parametersHint:'(active detector and general settings)',showAll:'show all sections',raw:'edit JSON',detectorTab:'Detector parameters',generalTab:'General parameters',uartTab:'UART metadata',apply:'Apply',save:'Save',revert:'Revert',linkedEditor:'Linked blob object editor',components:'Number of blobs in linked object',selectVideo:'Select on video',remove:'Remove',drawLink:'Draw link on video',manualLink:'Add link manually',base:'base',baseLink:'Base link',admin:'System administration'}
+  ru:{language:'Язык',source:'Исходное видео',result:'Результат детекции',blobPattern:'Номер цветового шаблона',configureBlob:'Настроить blob по выделенному контуру',selectHint:'Удерживая кнопку, обведите контур объекта',parameters:'Параметры',parametersHint:'(активный алгоритм и общие настройки)',showAll:'показать все разделы',raw:'редактировать JSON',detectorTab:'Параметры детектора',generalTab:'Общие параметры',uartTab:'Метаданные UART',apply:'Применить',save:'Сохранить',revert:'Откатить',linkedEditor:'Редактор связанного объекта',components:'Количество blobs в связанном объекте',selectVideo:'Выбрать на видео',remove:'Удалить',drawLink:'Провести связь на видео',manualLink:'Добавить связь вручную',base:'базовый',baseLink:'Базовая связь',admin:'Системное администрирование',configureBlobHint:'Пересчитывает цветовой диапазон, площадь и минимальные размеры шаблона с указанным номером по пикселям внутри обведённого контура. Положение на кадре не запоминает.',selectVideoHint:'То же, что «Настроить blob по выделенному контуру» для шаблона, назначенного этому компоненту, и дополнительно запоминает положение компонента на кадре для построения связей. Оба действия перезаписывают один и тот же цветовой шаблон: действует последнее.'},
+  en:{language:'Language',source:'Source video',result:'Detection result',blobPattern:'Blob pattern index',configureBlob:'Configure blob from selected contour',selectHint:'Hold the pointer and trace the object contour',parameters:'Parameters',parametersHint:'(active detector and general settings)',showAll:'show all sections',raw:'edit JSON',detectorTab:'Detector parameters',generalTab:'General parameters',uartTab:'UART metadata',apply:'Apply',save:'Save',revert:'Revert',linkedEditor:'Linked blob object editor',components:'Number of blobs in linked object',selectVideo:'Select on video',remove:'Remove',drawLink:'Draw link on video',manualLink:'Add link manually',base:'base',baseLink:'Base link',admin:'System administration',configureBlobHint:'Recomputes the color range, area and minimum size of the pattern with the given index from the pixels inside the traced contour. Does not remember the position on the frame.',selectVideoHint:'Same as "Configure blob from selected contour" for the pattern assigned to this component, and additionally remembers the component position on the frame for links. Both actions overwrite the same color pattern: the last one wins.'}
 };
 const modeNames={ru:{off:'Выключено',aruco_detection:'ArUco-маркеры',object_detection:'Объекты YOLO',classification:'Классификация',blob_detection:'Цветовые blobs',line_detection:'Линии',circle_detection:'Окружности'},en:{off:'Off',aruco_detection:'ArUco detection',object_detection:'Object detection',classification:'Classification',blob_detection:'Blob detection',line_detection:'Line detection',circle_detection:'Circle detection'}};
 function tr(key){return (uiText[language]||uiText.en)[key]||key;}
 function applyLocalization(){
   const values={languageLabel:tr('language'),sourceTitle:tr('source'),resultTitle:tr('result'),blobPatternLabel:tr('blobPattern'),configureBlobButton:tr('configureBlob'),blobSelectionHint:tr('selectHint'),parametersTitle:tr('parameters'),parametersHint:tr('parametersHint'),showAllLabel:tr('showAll'),rawLabel:tr('raw'),detectorTab:tr('detectorTab'),generalTab:tr('generalTab'),uartTab:tr('uartTab'),trainingTab:tr('trainingTab'),applyButton:tr('apply'),saveButton:tr('save'),revertButton:tr('revert'),adminTitle:tr('admin')};
   Object.entries(values).forEach(([id,value])=>{const element=document.getElementById(id);if(element)element.textContent=value;});
+  document.getElementById('configureBlobButton').title=tr('configureBlobHint');
   document.getElementById('language').value=language;
   [...document.getElementById('modes').children].forEach(button=>button.textContent=(modeNames[language]||modeNames.en)[button.dataset.m]||button.dataset.m);
 }
@@ -498,6 +515,7 @@ function startVideoStream(id,path){
   image.onerror=()=>setTimeout(()=>{image.src=path+'?t='+Date.now();},1000);
   image.src=path+'?t='+Date.now();
 }
+window.addEventListener('resize',resizeSelectionOverlay);
 startVideoStream('src','/source.mjpg');
 startVideoStream('v','/preview.mjpg');
 const selectionCanvas=document.getElementById('selection'),selectionContext=selectionCanvas.getContext('2d');
@@ -539,9 +557,9 @@ function configureBlobFromSelection(){
   const currentConfig=current();if(!currentConfig)return;cfgObj=currentConfig;
   const image=document.getElementById('src'),patterns=((cfgObj.blob_detection||{}).one_color_patterns||[]);
   const index=Number(document.getElementById('blobPattern').value);
-  if(!selectionPolygon||selectionPolygon.length<3){st.textContent='Trace a closed contour around the blob first.';return;}
-  if(!image.naturalWidth||!image.naturalHeight){st.textContent='Source frame is not ready.';return;}
-  if(!Number.isInteger(index)||index<0||index>=patterns.length){st.textContent='Blob pattern index is out of range.';return;}
+  if(!selectionPolygon||selectionPolygon.length<3){st.textContent=t2('Сначала обведите замкнутый контур вокруг объекта.','Trace a closed contour around the blob first.');return;}
+  if(!image.naturalWidth||!image.naturalHeight){st.textContent=t2('Исходный кадр ещё не готов.','Source frame is not ready.');return;}
+  if(!Number.isInteger(index)||index<0||index>=patterns.length){st.textContent=t2('Номер цветового шаблона вне диапазона.','Blob pattern index is out of range.');return;}
   const scaleX=image.naturalWidth/selectionCanvas.width,scaleY=image.naturalHeight/selectionCanvas.height;
   const polygon=selectionPolygon.map(point=>({x:point.x*scaleX,y:point.y*scaleY}));
   const xs=polygon.map(point=>point.x),ys=polygon.map(point=>point.y);
@@ -554,7 +572,7 @@ function configureBlobFromSelection(){
   const stride=Math.max(1,Math.floor((roi.w*roi.h)/12000));
   for(let pixel=0;pixel<roi.w*roi.h;pixel+=stride){const x=pixel%roi.w,row=Math.floor(pixel/roi.w);if(!pointInPolygon(roi.x+x+.5,roi.y+row+.5,polygon))continue;
     const offset=pixel*4,r=pixels[offset],g=pixels[offset+1],b=pixels[offset+2],y=.299*r+.587*g+.114*b;samples.push([y,(r-y)*.713+128,(b-y)*.564+128,r,g,b]);}
-  if(samples.length<10){st.textContent='Selected contour is too small.';return;}
+  if(samples.length<10){st.textContent=t2('Выделенный контур слишком мал.','Selected contour is too small.');return;}
   const center=[0,1,2].map(channel=>percentile(samples.map(sample=>sample[channel]),.5));
   let foreground=samples.filter(sample=>Math.hypot(sample[1]-center[1],sample[2]-center[2])<=24&&Math.abs(sample[0]-center[0])<=55);
   if(foreground.length<samples.length*.1)foreground=samples.sort((a,b)=>Math.hypot(a[0]-center[0],a[1]-center[1],a[2]-center[2])-Math.hypot(b[0]-center[0],b[1]-center[1],b[2]-center[2])).slice(0,Math.max(1,Math.floor(samples.length*.5)));
@@ -573,7 +591,7 @@ function configureBlobFromSelection(){
   }
   pattern.min_area=Math.max(1,Math.round(area*.45));pattern.max_area=Math.round(area*1.9);
   pattern.min_width=Math.max(1,Math.round(roi.w*.5));pattern.min_height=Math.max(1,Math.round(roi.h*.5));
-  st.textContent='Blob pattern '+index+' configured from a '+Math.round(polygonArea(polygon))+' px² contour. Review and Apply settings.';
+  st.textContent=t2('Шаблон '+index+' настроен по контуру '+Math.round(polygonArea(polygon))+' пикс². Проверьте параметры и нажмите «Применить».','Blob pattern '+index+' configured from a '+Math.round(polygonArea(polygon))+' px² contour. Review and Apply settings.');
   render();
 }
 const md=document.getElementById('modes');
@@ -640,11 +658,21 @@ const ruLabels={
 enabled:'Включено',device:'Устройство',baud:'Скорость UART, бит/с',format:'Формат',host:'Адрес получателя',port:'Порт',max_objects:'Максимум объектов',blob_detection:'Детекция blobs',aruco_detection:'Детекция ArUco',object_detection:'Детекция объектов',line_detection:'Детекция линий',circle_detection:'Детекция окружностей',general_params:'Общие параметры',transports:'Транспортные протоколы',uart_binary:'Бинарный UART',processing_mode:'Режим обработки',ui_language:'Язык интерфейса',debug_mode:'Отладочный режим',camera_rotation:'Поворот камеры, градусы',exposure_ev:'Экспозиция, EV',white_balance_bgr:'Баланс белого [B, G, R]',contrast:'Контрастность',brightness:'Яркость',enable_one_color_detection:'Детекция отдельных цветовых областей',enable_multicolor_detection:'Детекция связанных объектов',max_composite_objects:'Максимум связанных объектов',one_color_patterns:'Цветовые шаблоны',multicolor_patterns:'Шаблоны связанных объектов',min_area:'Минимальная площадь, пикс²',max_area:'Максимальная площадь, пикс²',min_width:'Минимальная ширина, пикс',min_height:'Минимальная высота, пикс',lower_range:'Нижняя граница YCrCb [Y, Cr, Cb]',upper_range:'Верхняя граница YCrCb [Y, Cr, Cb]',min_circularity:'Минимальная округлость',max_circularity:'Максимальная округлость',min_inertia:'Минимальная инерция',max_inertia:'Максимальная инерция',min_convexity:'Минимальная выпуклость',max_convexity:'Максимальная выпуклость',min_vertices:'Минимум вершин',max_vertices:'Максимум вершин',polygon_approximation:'Аппроксимация контура',dictionary:'Словарь ArUco',marker_length:'Размер маркера, м',allowed_ids:'Разрешённые ID',model_onnx:'Файл модели ONNX',model_rknn:'Файл модели RKNN',class_names_file:'Файл названий классов',input_width:'Ширина входа, пикс',input_height:'Высота входа, пикс',confidence_threshold:'Порог уверенности',nms_threshold:'Порог NMS IoU',output_layout:'Расположение данных выхода',output_attributes:'Количество атрибутов выхода',output_has_objectness:'Выход содержит objectness',min_radius:'Минимальный радиус, пикс',max_radius:'Максимальный радиус, пикс',distance:'Минимальное расстояние центров, пикс',min_angle:'Минимальный угол, градусы',max_angle:'Максимальный угол, градусы',max_lines:'Максимум линий',threshold:'Порог',overall_threshold:'Общий порог',weight:'Вес',goal:'Целевое значение',size:'Размер',size_measure:'Способ измерения размера',nodes:'Компоненты',links:'Связи',length_absolute:'Абсолютная длина',length_relative:'Относительная длина',angle_absolute:'Абсолютный угол',angle_relative:'Относительный угол'};
 Object.assign(labels,{web_preview:'Web preview',max_width:'Maximum preview width, px'});
 Object.assign(hints,{web_preview:'Controls the shared MJPEG cache used by all web clients.',max_width:'Frames wider than this value are downscaled before JPEG encoding.'});
-Object.assign(ruLabels,{web_preview:'Веб-просмотр',jpeg_quality:'Качество JPEG, 30–95',max_fps:'Максимальная частота, FPS',max_width:'Максимальная ширина, пикс'});
+Object.assign(ruLabels,{web_preview:'Веб-просмотр',jpeg_quality:'Качество JPEG, 30–95',max_fps:'Максимальная частота, FPS',max_width:'Максимальная ширина, пикс',
+  canny_threshold1:'Нижний порог Canny',canny_threshold2:'Верхний порог Canny',canny_aperture_size:'Размер ядра Canny, пикс',canny_l2_gradient:'Точный градиент L2',
+  hough_rho:'Шаг Хафа по расстоянию, пикс',hough_theta:'Шаг Хафа по углу, рад',hough_threshold:'Порог голосов Хафа',hough_min_line_length:'Минимальная длина линии, пикс',hough_max_line_gap:'Максимальный разрыв линии, пикс',
+  roi_x:'ROI X, доля кадра',roi_y:'ROI Y, доля кадра',roi_width:'Ширина ROI, доля кадра',roi_height:'Высота ROI, доля кадра',hough_param1:'Порог границ',hough_param2:'Порог аккумулятора',
+  blob_id:'ID цветовых шаблонов',min:'Минимум',max:'Максимум',circularity:'Округлость',inertia:'Инерция',convexity:'Выпуклость',angle:'Угол, градусы',id:'ID',color_model:'Цветовая модель',
+  system_admin:'Системное администрирование',token:'Токен администратора',file_root:'Корень файлов',terminal_enabled:'Разрешить терминал',
+  udp_metadata:'Метаданные UDP',udp_video:'Видео UDP',usb_stream:'Поток USB',uart_dxl:'UART DXL',metadata:'Передавать метаданные',video:'Передавать видео',packet_size:'Размер UDP-пакета, байт',rs485:'Управление направлением RS-485',startup_push:'Отправлять метаданные автоматически',push_interval_ms:'Интервал отправки, мс',eeprom_file:'Файл EEPROM DXL',
+  data_yaml:'Описание датасета YOLO',base_model:'Базовая модель',epochs:'Эпохи обучения',image_size:'Размер изображения обучения, пикс',output_onnx:'Выходной файл ONNX',class_names:'Названия классов',
+  min_luminance:'Минимальная яркость Y, 0–255',max_luminance:'Максимальная яркость Y, 0–255',min_chrominance_red:'Минимум Cr, 0–255',max_chrominance_red:'Максимум Cr, 0–255',min_chrominance_blue:'Минимум Cb, 0–255',max_chrominance_blue:'Максимум Cb, 0–255',
+  resize_size:'Размер до центральной обрезки, пикс',center_crop:'Центральная обрезка вместо растяжения',swap_rb:'Поменять каналы R и B'});
 function fieldLabel(key){return language==='ru'?(ruLabels[key]||labels[key]||key.replaceAll('_',' ')):(labels[key]||key.replaceAll('_',' ').replace(/^./,c=>c.toUpperCase()));}
-function fieldHint(key){return language==='ru'?('Настройка «'+fieldLabel(key)+'».'):(hints[key]||'Configuration parameter: '+fieldLabel(key)+'.');}
+function fieldHint(key){const hint=language==='ru'?ruHints[key]:hints[key];return hint||(language==='ru'?'Настройка «'+fieldLabel(key)+'».':'Configuration parameter: '+fieldLabel(key)+'.');}
+function t2(ru,en){return language==='ru'?ru:en;}
 function contextualFieldLabel(key,path){
-  if(path[0]==='transports'&&path[1]==='uart_binary')return({enabled:'Enable UART metadata',max_objects:'Maximum objects per packet'}[key]||fieldLabel(key));
+  if(path[0]==='transports'&&path[1]==='uart_binary')return((language==='ru'?{enabled:'Включить метаданные UART',max_objects:'Максимум объектов в пакете'}:{enabled:'Enable UART metadata',max_objects:'Maximum objects per packet'})[key]||fieldLabel(key));
   return fieldLabel(key);
 }
 function clampByte(v){return Math.max(0,Math.min(255,Math.round(v)));}
@@ -666,16 +694,29 @@ function pathInput(path){
 #include "web/vendor/hsluv/hsluv_js.hpp"
 #include "web/blob_color_picker_js.hpp"
 #include "web/training_js.hpp"
+#include "web/param_meta_js.hpp"
 R"HTML(
 function fieldRow(key,val,path){
   const r=el('div','row'), l=el('label'); l.textContent=contextualFieldLabel(key,path); l.title=fieldHint(key)+' JSON key: '+key; r.appendChild(l);
-  let i=el('input');
-  if(typeof val==='boolean'){i.type='checkbox';i.checked=val;i.dataset.t='b';}
-  else if(typeof val==='number'){i.type='number';i.value=val;i.dataset.t='n';
-    i.step=Number.isInteger(val)?'1':'any';}
-  else if(Array.isArray(val)){i.type='text';i.value=val.join(', ');i.dataset.t='a';
-    i.dataset.num=val.every(x=>typeof x==='number')?'1':'0';}
-  else{i.type='text';i.value=val;i.dataset.t='s';}
+  const meta=fieldMeta(key,path,val);
+  let i;
+  if(meta.options&&(typeof val==='number'||typeof val==='string')){
+    // Список допустимых значений: свободный ввод ломал детектор (например,
+    // canny_aperture_size=4 -> исключение OpenCV в потоке обработки).
+    i=el('select');i.dataset.t=typeof val==='number'?'n':'s';
+    const options=meta.options.slice();
+    if(!options.some(o=>String(o[0])===String(val)))options.unshift([val,String(val)+t2(' (недопустимо)',' (invalid)')]);
+    options.forEach(([value,text])=>{const o=el('option');o.value=String(value);o.textContent=text;o.selected=String(value)===String(val);i.appendChild(o);});
+    if(key==='ui_language'&&path[0]==='general_params')i.onchange=()=>setLanguage(i.value);
+  }else{
+    i=el('input');
+    if(typeof val==='boolean'){i.type='checkbox';i.checked=val;i.dataset.t='b';}
+    else if(typeof val==='number'){i.type='number';i.value=val;i.dataset.t='n';
+      i.step=String(meta.step);if(meta.min!==undefined)i.min=meta.min;if(meta.max!==undefined)i.max=meta.max;}
+    else if(Array.isArray(val)){i.type='text';i.value=val.join(', ');i.dataset.t='a';
+      i.dataset.num=val.every(x=>typeof x==='number')?'1':'0';}
+    else{i.type='text';i.value=val;i.dataset.t='s';}
+  }
   i.title=l.title; i.dataset.path=JSON.stringify(path); r.appendChild(i);
   if(path.length===4&&path[0]==='blob_detection'&&path[1]==='one_color_patterns'&&['lower_range','upper_range'].includes(key)){
     i.type='hidden';l.hidden=true;
@@ -697,25 +738,25 @@ function setLinkedNodeCount(patternIndex,value){syncLinkedEdit(blob=>{
   const points=linkedPoints[patternIndex]||{};Object.keys(points).forEach(id=>{if(Number(id)>=count)delete points[id];});
 });}
 function startLinkedPartSelection(patternIndex,nodeIndex){
-  cfgObj=collect();linkedAction={type:'part',patternIndex,nodeIndex};selectionPolygon=null;linkPreview=null;st.textContent='Trace the object contour for component N'+nodeIndex+'.';render();
+  cfgObj=collect();linkedAction={type:'part',patternIndex,nodeIndex};selectionPolygon=null;linkPreview=null;st.textContent=t2('Обведите контур объекта для компонента N'+nodeIndex+'.','Trace the object contour for component N'+nodeIndex+'.');render();
 }
 function assignLinkedPartFromSelection(patternIndex,nodeIndex){
-  if(!selectionPolygon||selectionPolygon.length<3){st.textContent='Trace the component contour first.';return;}
+  if(!selectionPolygon||selectionPolygon.length<3){st.textContent=t2('Сначала обведите контур компонента.','Trace the component contour first.');return;}
   cfgObj=collect();const node=cfgObj.blob_detection.multicolor_patterns[patternIndex].nodes[nodeIndex],colorId=(node.blob_id||[])[0];
   document.getElementById('blobPattern').value=colorId;linkedPoints[patternIndex]=linkedPoints[patternIndex]||{};
   const center=polygonCenter(selectionPolygon);linkedPoints[patternIndex][nodeIndex]={x:center.x/selectionCanvas.width,y:center.y/selectionCanvas.height};
-  linkedAction=null;configureBlobFromSelection();selectionPolygon=null;st.textContent='Component N'+nodeIndex+' assigned to blob pattern '+colorId+'.';drawSelection();
+  linkedAction=null;configureBlobFromSelection();selectionPolygon=null;st.textContent=t2('Компонент N'+nodeIndex+' назначен цветовому шаблону '+colorId+'; шаблон перенастроен по контуру.','Component N'+nodeIndex+' assigned to blob pattern '+colorId+'; the pattern was reconfigured from the contour.');drawSelection();
 }
 function startLinkedLine(patternIndex){
-  cfgObj=collect();const points=linkedPoints[patternIndex]||{};if(Object.keys(points).length<2){st.textContent='Assign at least two components on the video first.';return;}
-  linkedAction={type:'link',patternIndex};selectionPolygon=null;st.textContent='Draw a line from one assigned component to another.';render();
+  cfgObj=collect();const points=linkedPoints[patternIndex]||{};if(Object.keys(points).length<2){st.textContent=t2('Сначала назначьте на видео хотя бы два компонента.','Assign at least two components on the video first.');return;}
+  linkedAction={type:'link',patternIndex};selectionPolygon=null;st.textContent=t2('Проведите линию от одного назначенного компонента к другому.','Draw a line from one assigned component to another.');render();
 }
 function nearestLinkedNode(patternIndex,point){let result=null,best=45;const points=linkedPoints[patternIndex]||{};
   Object.entries(points).forEach(([id,p])=>{const distance=Math.hypot(point.x-p.x*selectionCanvas.width,point.y-p.y*selectionCanvas.height);if(distance<best){best=distance;result=Number(id);}});return result;}
 function finishLinkedLine(start,end){
   const patternIndex=linkedAction.patternIndex,first=nearestLinkedNode(patternIndex,start),second=nearestLinkedNode(patternIndex,end);linkedAction=null;
-  if(first===null||second===null){st.textContent='Start and finish the line on assigned component markers.';render();return;}
-  if(first===second){st.textContent='A component cannot be linked to itself.';render();return;}
+  if(first===null||second===null){st.textContent=t2('Начните и закончите линию на маркерах назначенных компонентов.','Start and finish the line on assigned component markers.');render();return;}
+  if(first===second){st.textContent=t2('Компонент нельзя связать сам с собой.','A component cannot be linked to itself.');render();return;}
   cfgObj=collect();const pattern=cfgObj.blob_detection.multicolor_patterns[patternIndex],a=Math.min(first,second),b=Math.max(first,second),id=a+'-'+b,points=linkedPoints[patternIndex];
   let link=pattern.links.find(item=>item.id===id);if(!link){link=linkedDefaults().link(a,b);pattern.links.push(link);}
   const image=document.getElementById('src'),dx=(points[b].x-points[a].x)*image.naturalWidth,dy=(points[b].y-points[a].y)*image.naturalHeight;
@@ -723,18 +764,18 @@ function finishLinkedLine(start,end){
   link.length_absolute={min:Math.max(0,length*.75),max:length*1.25,goal:length,weight:255};
   link.angle_absolute={min:Math.max(0,angle-15),max:Math.min(180,angle+15),goal:angle,weight:255};link.threshold=.7;
   if(id==='0-1'){pattern.links=pattern.links.filter(item=>item!==link);pattern.links.unshift(link);}
-  st.textContent='Link '+id+' configured: '+Math.round(length)+' px, '+Math.round(angle)+'°.';render();
+  st.textContent=t2('Связь '+id+' настроена: '+Math.round(length)+' пикс, '+Math.round(angle)+'°.','Link '+id+' configured: '+Math.round(length)+' px, '+Math.round(angle)+'°.');render();
 }
 function addLinkedNode(patternIndex){syncLinkedEdit(blob=>{
   const pattern=blob.multicolor_patterns[patternIndex];
-  if(pattern.nodes.length>=5){st.textContent='A linked object may contain at most 5 blobs.';return;}
+  if(pattern.nodes.length>=5){st.textContent=t2('Связанный объект может содержать не более 5 blobs.','A linked object may contain at most 5 blobs.');return;}
   const id=pattern.nodes.length,colors=blob.one_color_patterns||[];
   pattern.nodes.push(linkedDefaults().node(id));
   if(colors.length)pattern.nodes[id].blob_id=[colors[Math.min(id,colors.length-1)].id];
 });}
 function removeLinkedNode(patternIndex,nodeIndex){syncLinkedEdit(blob=>{
   const pattern=blob.multicolor_patterns[patternIndex];
-  if(pattern.nodes.length<=2){st.textContent='A linked object must contain at least two blobs.';return;}
+  if(pattern.nodes.length<=2){st.textContent=t2('Связанный объект должен содержать не менее двух blobs.','A linked object must contain at least two blobs.');return;}
   pattern.nodes.splice(nodeIndex,1);pattern.nodes.forEach((node,index)=>node.id=index);
   pattern.links=pattern.links.map(link=>{const ids=link.id.split('-').map(Number);if(ids.includes(nodeIndex))return null;
     link.id=(ids[0]-(ids[0]>nodeIndex?1:0))+'-'+(ids[1]-(ids[1]>nodeIndex?1:0));return link;}).filter(Boolean);
@@ -742,11 +783,11 @@ function removeLinkedNode(patternIndex,nodeIndex){syncLinkedEdit(blob=>{
 function addLinkedRelation(patternIndex){syncLinkedEdit(blob=>{
   const pattern=blob.multicolor_patterns[patternIndex];if(pattern.nodes.length<2)return;
   for(let a=0;a<pattern.nodes.length;a++)for(let b=a+1;b<pattern.nodes.length;b++)if(!pattern.links.some(link=>link.id===a+'-'+b)){pattern.links.push(linkedDefaults().link(a,b));return;}
-  st.textContent='All component pairs are already linked.';
+  st.textContent=t2('Все пары компонентов уже связаны.','All component pairs are already linked.');
 });}
 function updateLinkedRelation(patternIndex,linkIndex,side,value){syncLinkedEdit(blob=>{
   const link=blob.multicolor_patterns[patternIndex].links[linkIndex],ids=link.id.split('-').map(Number);ids[side]=Number(value);
-  if(ids[0]===ids[1]){st.textContent='A component cannot be linked to itself.';return;}link.id=ids.join('-');
+  if(ids[0]===ids[1]){st.textContent=t2('Компонент нельзя связать сам с собой.','A component cannot be linked to itself.');return;}link.id=ids.join('-');
 });}
 function renderLinkedBlobEditor(parent){
   const blob=cfgObj.blob_detection;if(!blob)return;
@@ -755,12 +796,12 @@ function renderLinkedBlobEditor(parent){
     const section=el('details');section.open=true;const summary=el('summary');summary.textContent=(language==='ru'?'Составной объект ':'Composite object ')+pattern.id+' — '+pattern.nodes.length+(language==='ru'?' блобов, ':' blobs, ')+pattern.links.length+(language==='ru'?' связей':' links');section.appendChild(summary);
     const body=el('div','body'),countRow=el('div','row'),countLabel=el('label');countLabel.textContent=tr('components');countRow.appendChild(countLabel);
     const count=el('input');count.type='number';count.min='2';count.max='5';count.value=pattern.nodes.length;count.onchange=()=>setLinkedNodeCount(patternIndex,count.value);countRow.appendChild(count);body.appendChild(countRow);
-    const guide=el('div','hint');guide.textContent=language==='ru'?'1. Задайте число компонентов. 2. Выберите каждый компонент на исходном видео. 3. Проведите связи между назначенными маркерами.':'1. Set component count. 2. Select each component on the source video. 3. Draw links between assigned markers.';body.appendChild(guide);
+    const guide=el('div','hint');guide.textContent=language==='ru'?'1. Задайте число компонентов. 2. Обведите каждый компонент на исходном видео через «Выбрать на видео» — это настроит его цветовой шаблон (как «Настроить blob по выделенному контуру») и запомнит положение. 3. Проведите связи между назначенными маркерами.':'1. Set component count. 2. Trace each component on the source video via "Select on video": it configures its color pattern (like "Configure blob from selected contour") and remembers the position. 3. Draw links between assigned markers.';body.appendChild(guide);
     const grid=el('div','linkedGrid');
     pattern.nodes.forEach((node,nodeIndex)=>{const card=el('div','linkedCard'),caption=el('div');caption.textContent=(language==='ru'?'Компонент ':'Component ')+nodeIndex+(nodeIndex===0?(language==='ru'?' (базовый)':' (base)'):'');card.appendChild(caption);
       const select=el('select');(blob.one_color_patterns||[]).forEach(color=>{const option=el('option');option.value=color.id;option.textContent=(language==='ru'?'Шаблон блоба ':'Blob pattern ')+color.id+(color.enabled===false?(language==='ru'?' (отключён)':' (disabled)'):'');option.selected=(node.blob_id||[]).includes(color.id);select.appendChild(option);});
       select.title=language==='ru'?'Назначьте шаблон цвета или блоба для этого компонента.':'Assign the detected color/blob pattern used by this component.';select.onchange=()=>syncLinkedEdit(b=>b.multicolor_patterns[patternIndex].nodes[nodeIndex].blob_id=[Number(select.value)]);card.appendChild(select);
-      const pick=el('button',linkedAction&&linkedAction.type==='part'&&linkedAction.patternIndex===patternIndex&&linkedAction.nodeIndex===nodeIndex?'selecting':'');pick.textContent=tr('selectVideo');pick.onclick=()=>startLinkedPartSelection(patternIndex,nodeIndex);card.appendChild(pick);
+      const pick=el('button',linkedAction&&linkedAction.type==='part'&&linkedAction.patternIndex===patternIndex&&linkedAction.nodeIndex===nodeIndex?'selecting':'');pick.textContent=tr('selectVideo');pick.title=tr('selectVideoHint');pick.onclick=()=>startLinkedPartSelection(patternIndex,nodeIndex);card.appendChild(pick);
       const remove=el('button','danger');remove.textContent=tr('remove');remove.disabled=pattern.nodes.length<=2||nodeIndex<2;remove.title=nodeIndex<2?(language==='ru'?'Компоненты 0 и 1 задают базовую связь.':'Components 0 and 1 define the base link.'):(language==='ru'?'Удалить компонент и его связи.':'Remove this component and its links.');remove.onclick=()=>removeLinkedNode(patternIndex,nodeIndex);card.appendChild(remove);grid.appendChild(card);});
     body.appendChild(grid);const addNode=el('button');addNode.textContent=language==='ru'?'+ Добавить компонент':'+ Add component';addNode.disabled=pattern.nodes.length>=5;addNode.onclick=()=>addLinkedNode(patternIndex);body.appendChild(addNode);
     const linksTitle=el('div');linksTitle.textContent=language==='ru'?'Пространственные связи':'Spatial links';linksTitle.style.marginTop='8px';body.appendChild(linksTitle);
@@ -864,12 +905,14 @@ function adminNetwork(){try{adminPost(JSON.parse(admNet.value));}catch(e){adminS
 load();
 </script></body></html>)HTML";
 
-static bool sendAll(int socketFd, const char* data, size_t size)
+using platform::socket_t;
+
+static bool sendAll(socket_t socketFd, const char* data, size_t size)
 {
     while (size > 0)
     {
-        ssize_t sent = send(socketFd, data, size, MSG_NOSIGNAL);
-        if (sent < 0 && errno == EINTR)
+        const long sent = platform::socketSend(socketFd, data, size);
+        if (sent < 0 && platform::socketInterrupted(platform::socketError()))
             continue;
         if (sent <= 0)
             return false;
@@ -879,7 +922,7 @@ static bool sendAll(int socketFd, const char* data, size_t size)
     return true;
 }
 
-static void sendResp(int c, const char* type, const std::string& body)
+static void sendResp(socket_t c, const char* type, const std::string& body)
 {
     char hdr[256];
     int k = snprintf(hdr, sizeof(hdr),
@@ -891,7 +934,7 @@ static void sendResp(int c, const char* type, const std::string& body)
 }
 
 // Ответ с произвольным статусом и дополнительными заголовками
-static void sendReply(int c, int status, const char* type, const std::string& body,
+static void sendReply(socket_t c, int status, const char* type, const std::string& body,
                       const std::string& extraHeaders = "")
 {
     const char* reason = status == 200 ? "OK" : status == 400 ? "Bad Request"
@@ -907,7 +950,7 @@ static void sendReply(int c, int status, const char* type, const std::string& bo
 }
 
 // Потоковая отдача файла (zip датасета, миниатюры) кусками по 64 KiB
-static void sendFile(int c, const char* type, const std::string& path,
+static void sendFile(socket_t c, const char* type, const std::string& path,
                      const std::string& extraHeaders)
 {
     std::ifstream in(path, std::ios::binary);
@@ -933,7 +976,7 @@ static void sendFile(int c, const char* type, const std::string& path,
     }
 }
 
-static void sendTrainingReply(int c, const HttpReply& reply)
+static void sendTrainingReply(socket_t c, const HttpReply& reply)
 {
     if (!reply.filePath.empty())
     {
@@ -948,7 +991,7 @@ static void sendTrainingReply(int c, const HttpReply& reply)
         sendReply(c, reply.status, reply.contentType.c_str(), reply.body, reply.extraHeaders);
 }
 
-static void sendMjpegStream(int c, bool source)
+static void sendMjpegStream(socket_t c, bool source)
 {
     struct ClientGuard
     {
@@ -1000,29 +1043,31 @@ static constexpr int kControlPort = 8081;
 
 static void controlServer(int port)
 {
-    int sfd = socket(AF_INET, SOCK_STREAM, 0);
-    int one = 1;
-    setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    platform::socketsInit();
+    const socket_t sfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (!platform::socketValid(sfd))
+    {
+        std::cerr << platform::socketErrorText("control socket") << std::endl;
+        return;
+    }
+    platform::socketSetReuseAddress(sfd);
     struct sockaddr_in a{};
     a.sin_family = AF_INET;
     a.sin_port = htons(port);
     a.sin_addr.s_addr = INADDR_ANY;
     if (bind(sfd, (struct sockaddr*)&a, sizeof(a)) || listen(sfd, 16))
     {
-        perror("control bind/listen");
+        std::cerr << platform::socketErrorText("control bind/listen") << std::endl;
         return;
     }
     std::cout << "control UI: http://<ip>:" << port << "/" << std::endl;
 
     for (;;)
     {
-        int c = accept(sfd, nullptr, nullptr);
-        if (c < 0)
+        const socket_t c = accept(sfd, nullptr, nullptr);
+        if (!platform::socketValid(c))
             continue;
-        timeval sendTimeout{};
-        sendTimeout.tv_sec = 2;
-        setsockopt(c, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, sizeof(sendTimeout));
-        setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &sendTimeout, sizeof(sendTimeout));
+        platform::socketSetTimeouts(c, 2000);
 
         std::thread([c]() {
 
@@ -1033,7 +1078,7 @@ static void controlServer(int port)
         long contentLen = 0;
         while (req.size() < 256 * 1024)
         {
-            ssize_t n = read(c, buf, sizeof(buf));
+            const long n = platform::socketRecv(c, buf, sizeof(buf));
             if (n <= 0)
                 break;
             req.append(buf, n);
@@ -1138,7 +1183,7 @@ static void controlServer(int port)
                 {
                     sendResp(c, "application/json",
                              R"({"error":"admin token is required to change system_admin"})");
-                    close(c);
+                    platform::socketClose(c);
                     return;
                 }
 #endif
@@ -1258,7 +1303,7 @@ static void controlServer(int port)
             {
                 sendReply(c, 401, "application/json",
                           "{\"error\":\"admin token is required for developer tests\"}");
-                close(c);
+                platform::socketClose(c);
                 return;
             }
 #endif
@@ -1318,7 +1363,7 @@ static void controlServer(int port)
                 // предупреждение препроцессора в сборках, где блок пропущен
                 sendReply(c, 401, "application/json",
                           "{\"error\":\"admin token is required (training.require_admin_token)\"}");
-                close(c);
+                platform::socketClose(c);
                 return;
             }
 #endif
@@ -1335,7 +1380,7 @@ static void controlServer(int port)
         {
             sendResp(c, "text/html; charset=utf-8", kPage);
         }
-        close(c);
+        platform::socketClose(c);
         }).detach();
     }
 }
@@ -1352,7 +1397,10 @@ int main(int argc, char** argv)
     int cameraHeight = 480;
     int cameraFps = 15;
     bool cameraMjpeg = false;
-    std::string dumpDir = "/tmp";
+    std::error_code tempError;
+    std::string dumpDir = std::filesystem::temp_directory_path(tempError).string();
+    if (tempError || dumpDir.empty())
+        dumpDir = "/tmp";
     for (int i = 1; i < argc; ++i)
     {
         if (!strcmp(argv[i], "--dump") && i + 1 < argc)
@@ -1410,7 +1458,7 @@ int main(int argc, char** argv)
     std::cout << "shm source: " << source.width() << "x" << source.height() << std::endl;
 #elif defined(HOST_WEB_UI)
 #ifdef HOST_CAMERA_SOURCE
-    CameraSource source(cameraDevice, cv::CAP_V4L2, cameraWidth, cameraHeight,
+    CameraSource source(cameraDevice, kDefaultCameraBackend, cameraWidth, cameraHeight,
                         cameraFps, cameraMjpeg);
     if (!source.isOpened())
     {
@@ -1597,11 +1645,11 @@ int main(int argc, char** argv)
     // Вахтёр: правка config.json руками/по сети применяется без рестарта
     std::atomic<bool> ctlRun{true};
     std::thread watcher([&] {
-        time_t last = cfgMtime(gConfigPath.c_str());
+        int64_t last = cfgMtime(gConfigPath);
         while (ctlRun)
         {
-            sleep(1);
-            time_t m = cfgMtime(gConfigPath.c_str());
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            const int64_t m = cfgMtime(gConfigPath);
             if (m == 0 || m == last)
                 continue;
             last = m;

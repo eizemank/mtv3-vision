@@ -7,6 +7,7 @@
 #include <string>
 #include <thread>
 
+#include "platform/socket.hpp"
 #include "transport/vision_frame.hpp"
 
 class WebSocketMetadataTransport
@@ -15,7 +16,7 @@ public:
     WebSocketMetadataTransport(std::string bindAddress, uint16_t port);
     ~WebSocketMetadataTransport();
 
-    bool isOpen() const { return listenerFd_ >= 0; }
+    bool isOpen() const { return platform::socketValid(listenerFd_); }
     void publish(const VisionFrame& frame);
 
 private:
@@ -23,7 +24,7 @@ private:
 
     std::string bindAddress_;
     uint16_t port_ = 0;
-    int listenerFd_ = -1;
+    platform::socket_t listenerFd_ = platform::kInvalidSocket;
     std::atomic<bool> running_{true};
     std::mutex mutex_;
     std::condition_variable ready_;

@@ -1,42 +1,104 @@
 # Host web-interface test version
 
 This target runs the real SeeSharp processing manager and embedded HTTP UI on
-a Linux development computer or in WSL. It does not require a camera or CM5:
-`SyntheticSource` produces two `DICT_4X4_50` ArUco markers, configured YCrCb
-color blobs, and CC0 photographic person/car test scenes at about 30 FPS. CMake
-copies the photographs to the host build directory. If those assets are absent,
-the source falls back to the original programmatic silhouettes.
+a development computer without a camera or CM5: `SyntheticSource` produces two
+`DICT_4X4_50` ArUco markers, configured color blobs and CC0 photographic
+person/car test scenes at about 30 FPS. CMake copies the photographs to the
+build directory; without them the source falls back to programmatic
+silhouettes.
 
-## Dependencies
+Supported hosts:
 
-Ubuntu/Debian or WSL:
+| Host | Launcher | Toolchain |
+|---|---|---|
+| Ubuntu/Debian (native) | `sh board/host/run_web_ui.sh` | GCC/Clang, CMake, OpenCV from apt |
+| Windows 10/11 | `.\board\host\run_web_ui.ps1` | Ubuntu inside WSL, same build as native Ubuntu |
+
+Native Windows builds are not supported: CMake stops with a message pointing
+to the WSL launcher.
+
+## Ubuntu / Debian (native or WSL)
+
+Install the dependencies once (compiler, CMake, OpenCV with aruco/dnn,
+nlohmann-json, Python, curl; `--with-tests` adds Node.js for the UI tests):
 
 ```bash
-sudo apt update
-sudo apt install -y build-essential cmake pkg-config libopencv-dev \
-    nlohmann-json3-dev python3
+sh board/host/setup_ubuntu.sh            # or: --with-tests
 ```
 
-If CMake previously reported `No CMAKE_CXX_COMPILER could be found`, install
-`build-essential` using the command above and rerun the launcher. It detects
-and removes the stale failed CMake cache automatically.
-
-## Run
-
-From the repository root:
+Build and run from the repository root:
 
 ```bash
 sh board/host/run_web_ui.sh
 ```
 
-From Windows PowerShell with WSL installed:
+Options:
+
+| Option / variable | Effect |
+|---|---|
+| `--download-yolo` | fetch `yolo11n.onnx` + `coco.names` into the build directory and switch the config to `object_detection` |
+| `--build-only` | configure and build without starting `mainCV` (CI, tests) |
+| `--debug` | `CMAKE_BUILD_TYPE=Debug` (also `SEESHARP_BUILD_TYPE=...`) |
+| `SEESHARP_HOST_BUILD` | build directory, default `~/.cache/seesharp/build-host-ui` |
+| `SEESHARP_BUILD_JOBS` | parallel compile jobs, default 4 |
+
+The launcher rewrites `config.json` in the build directory for the host
+profile (circle detection, debug mode, all transports off) and starts
+`./mainCV --config ./config.json` from there, so relative model paths resolve
+the same way as on CM5. Open `http://127.0.0.1:8081/`.
+
+If CMake previously reported `No CMAKE_CXX_COMPILER could be found`, install
+`build-essential` and rerun: the launcher removes the stale failed cache
+automatically. Run the launcher as your normal user, never through `sudo`; if
+an earlier run created root-owned files, restore ownership once:
+
+```bash
+sudo chown -R "$USER:$USER" "$HOME/.cache/seesharp"
+```
+
+### Tests
+
+```bash
+sh board/host/run_tests.sh
+```
+
+runs the web UI unit tests (`cpp/SeeSharp/tests/*.test.cjs`, needs Node.js),
+the blob color mask parity test and the UART protocol/transport test on a pty
+pair (both need `g++` and OpenCV core). When `pkg-config opencv4` points at a
+different OpenCV than the CMake build (two installations on one machine),
+pass the flags explicitly:
+
+```bash
+SEESHARP_OPENCV_CFLAGS="" SEESHARP_OPENCV_LIBS="-L/usr/local/lib -lopencv_core" \
+    sh board/host/run_tests.sh
+```
+
+## Windows (WSL)
+
+Install WSL with Ubuntu once (elevated PowerShell), then the Ubuntu
+dependencies inside it:
+
+```powershell
+wsl --install -d Ubuntu
+```
+
+```bash
+sh board/host/setup_ubuntu.sh      # inside the Ubuntu shell, repository root
+```
+
+Build and run from Windows PowerShell in the repository root:
 
 ```powershell
 .\board\host\run_web_ui.ps1
+.\board\host\run_web_ui.ps1 -DownloadYolo   # once, to enable YOLO
+.\board\host\run_web_ui.ps1 -BuildOnly
 ```
 
-Windows browsers can normally open the WSL service directly through
-`http://127.0.0.1:8081/`.
+The launcher picks an installed distribution (Ubuntu preferred), converts the
+repository path with `wslpath` and runs `board/host/run_web_ui.sh` inside
+WSL; the build lives in the Linux filesystem under `~/.cache/seesharp`, which
+avoids DrvFS ACL problems and is faster than `/mnt/c`. Windows browsers open
+the WSL service directly through `http://127.0.0.1:8081/`.
 
 If PowerShell reports `HCS_E_SERVICE_NOT_AVAILABLE`, WSL2 cannot create its
 virtual machine. Open PowerShell as Administrator and run:
@@ -58,7 +120,7 @@ wsl --set-version Ubuntu 1  # convert an existing Ubuntu distribution
 wsl --install -d Ubuntu
 ```
 
-After Ubuntu starts, install the dependencies from the section above and run
+After Ubuntu starts, run `sh board/host/setup_ubuntu.sh` inside it and start
 the PowerShell launcher again.
 
 If the error is `Wsl/Service/ERROR_PATH_NOT_FOUND`, inspect installed
@@ -70,7 +132,7 @@ wsl --update
 wsl --list --verbose
 ```
 
-The launcher now selects an installed distribution explicitly instead of
+The launcher selects an installed distribution explicitly instead of
 assuming that the default one is valid. If a listed distribution has lost its
 virtual disk or installation directory, it must be restored from backup or
 reinstalled. The following commands permanently delete that distribution and
@@ -81,50 +143,26 @@ wsl --unregister Ubuntu
 wsl --install -d Ubuntu
 ```
 
-Open `http://127.0.0.1:8081/`. The left pane shows the synthetic source and the
-right pane shows the active detector output. Change algorithm parameters,
-select another mode, and use **Apply** to test hot reload. Modes requiring an
+## Using the host UI
+
+The right column shows the synthetic source and the active detector output
+and stays on screen while the parameters scroll; **Apply**, **Save** and
+**Revert** are pinned at the bottom. Change algorithm parameters, select
+another mode, and use **Apply** to test hot reload. Modes requiring an
 external model, such as `object_detection`, need their model file in the build
-directory.
+directory. The operator guide is `docs/DETECTOR_UI_GUIDE_RU.md`.
 
 In `blob_detection`, hold the pointer and trace a closed contour around a
 representative blob in the **Source** pane, select its pattern index, and click
 **Configure blob from selected contour**. The UI samples only pixels inside the
-polygon and estimates robust YCrCb limits plus initial area, width, and height
+polygon and estimates color limits plus initial area, width, and height
 constraints. Review the generated values and click **Apply** or **Save**; trace
 close to the object boundary for the best color estimate.
 
-To enable YOLO object detection in the host UI, install the download prerequisites
-and launch once with `--download-yolo`:
-
-```bash
-sudo apt install -y curl python3
-sh board/host/run_web_ui.sh --download-yolo
-```
-
-Run the launcher as your normal user, not through `sudo`. If an earlier run
-created root-owned build files, restore ownership once:
-
-```bash
-sudo chown -R "$USER:$USER" "$HOME/.cache/seesharp"
-```
-
-The launcher stores build artifacts under `~/.cache/seesharp/build-host-ui`,
-not under the repository on `/mnt/c`. WSL's Linux filesystem avoids Windows
-ACL failures such as `configure_file: Operation not permitted` and builds
-faster than DrvFS.
-
-PowerShell equivalent:
-
-```powershell
-.\board\host\run_web_ui.ps1 -DownloadYolo
-```
-
-The launcher reconfigures CMake before invoking the download target, avoiding
-stale Makefiles without `download_yolo11n`. Then select `object_detection`.
-The launcher runs
-`mainCV` from the build directory, so relative `yolo11n.onnx` and `coco.names`
-paths resolve consistently with the CM5 deployment.
+To enable YOLO object detection in the host UI, launch once with
+`--download-yolo` (Linux) or `-DownloadYolo` (Windows/WSL). The launcher
+reconfigures CMake before invoking the download target, avoiding stale build
+files without `download_yolo11n`. Then select `object_detection`.
 
 The synthetic host profile excludes hardware transports and system
 administration. Use the camera-debug profile below for transport integration.

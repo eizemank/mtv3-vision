@@ -10,6 +10,7 @@
 
 #include <opencv2/core.hpp>
 
+#include "platform/serial.hpp"
 #include "transport/vision_frame.hpp"
 
 class UsbStreamTransport
@@ -41,7 +42,7 @@ private:
     int maxWidth_ = 960;
     bool metadataEnabled_ = true;
     bool videoEnabled_ = true;
-    int deviceFd_ = -1;
+    platform::SerialPort port_;
     bool running_ = true;
     bool hasPendingFrame_ = false;
     PendingFrame pendingFrame_;

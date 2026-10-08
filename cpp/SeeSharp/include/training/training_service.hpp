@@ -25,6 +25,7 @@
 #include <nlohmann/json.hpp>
 
 #include "model/classifier_params.hpp"
+#include "platform/socket.hpp"
 #include "training/frame_tap.hpp"
 #include "training/trainer_job.hpp"
 
@@ -60,7 +61,7 @@ public:
 
     /// POST /training/model: дочитать тело из сокета в файл моделей.
     /// headers — заголовки запроса, prefix — уже прочитанная часть тела.
-    void receiveUpload(int socket, const std::string& headers, const std::string& prefix,
+    void receiveUpload(platform::socket_t socket, const std::string& headers, const std::string& prefix,
                        long contentLength, HttpReply& reply);
 
 private:

@@ -8,12 +8,15 @@
 
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include <nlohmann/json.hpp>
+
+#include "platform/process.hpp"
 
 class TrainerJob
 {
@@ -30,11 +33,11 @@ public:
     TrainerJob(const TrainerJob&) = delete;
     TrainerJob& operator=(const TrainerJob&) = delete;
 
-    /// Запуск; false + error, если уже идёт или fork/exec не удался.
+    /// Запуск; false + error, если уже идёт или процесс не запустился.
     bool start(const std::vector<std::string>& argv,
                const std::vector<std::string>& extraEnv,
                const std::string& workdir, std::string& error);
-    /// SIGTERM, до 5 с ожидания, затем SIGKILL. Блокирует до завершения.
+    /// SIGTERM (Windows: TerminateProcess), до 5 с ожидания, затем SIGKILL.
     void stop();
     bool running() const;
 
@@ -49,17 +52,14 @@ public:
                                   int& exitCode);
 
 private:
-    void readerLoop(int fd);
+    void readerLoop(platform::ChildProcess& child);
     void consumeLine(const std::string& line);
     void appendLog(const std::string& line);
-    static pid_t spawn(const std::vector<std::string>& argv,
-                       const std::vector<std::string>& extraEnv,
-                       const std::string& workdir, bool lowPriority, int& outFd,
-                       std::string& error);
 
     mutable std::mutex mutex_;
     std::thread reader_;
-    pid_t pid_ = -1;
+    std::shared_ptr<platform::ChildProcess> child_;
+    long long pid_ = -1;
     bool running_ = false;
     std::string state_ = "idle";
     std::string error_;
