@@ -143,7 +143,8 @@ normalized ROI (`roi_x`, `roi_y`, `roi_width`, `roi_height`) and `max_lines`.
 
 ## Neural-network training
 
-The web UI has a **Training** tab (`docs/DETECTOR_UI_GUIDE_RU.md`, section 13)
+The web UI has a **Training** tab (operator guide: `docs/TRAINING_UI_GUIDE_RU.md`;
+overview in `docs/DETECTOR_UI_GUIDE_RU.md`, section 13)
 that collects samples from the live camera, trains the small 64×64 classifier
 on the CM5 itself and activates the result. Nothing runs at boot: the trainer is
 a `nice 15` / idle-IO subprocess started on demand and killed with the service.
