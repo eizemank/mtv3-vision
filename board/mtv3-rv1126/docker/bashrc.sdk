@@ -1,0 +1,33 @@
+# /etc/profile.d/mtv3-sdk.sh — окружение login-shell в контейнере mtv3-rv1126-sdk.
+export RV1126_SDK="${RV1126_SDK:-/proj/rv1126_sdk_ai}"
+export RV1126_OUT="$RV1126_SDK/buildroot/output/rockchip_rv1126_rv1109_mtv3"
+# Тулчейн buildroot попадает в PATH, как только собран rootfs.
+case ":$PATH:" in
+    *":$RV1126_OUT/host/bin:"*) ;;
+    *) PATH="$RV1126_OUT/host/bin:$PATH" ;;
+esac
+export PATH
+
+# Короткие команды поверх ./build.sh SDK (см. README: пересборка ядра/rootfs).
+# Функции, а не alias: alias не работают в `bash -lc '...'` (неинтерактивный shell).
+sdk()           { (cd "$RV1126_SDK" && ./build.sh "$@"); }
+sdk-kernel()    { sdk kernel "$@"; }
+sdk-uboot()     { sdk uboot "$@"; }
+sdk-rootfs()    { sdk rootfs "$@"; }
+sdk-all()       { sdk all "$@"; }
+sdk-firmware()  { sdk firmware "$@"; }
+sdk-updateimg() { sdk updateimg "$@"; }
+# menuconfig buildroot для defconfig mtv3
+sdk-brconfig() { (cd "$RV1126_SDK/buildroot" && make O=output/rockchip_rv1126_rv1109_mtv3 menuconfig); }
+# кросс-сборка SeeSharp из этого репозитория
+mtv3-cmake() {
+    cmake -S "$MTV3_REPO/cpp/SeeSharp" -B "$MTV3_REPO/cpp/SeeSharp/build-rv1126" \
+        -DCMAKE_TOOLCHAIN_FILE="$MTV3_REPO/board/mtv3-rv1126/toolchain-rv1126.cmake" \
+        -DMTV3_BOARD=ON "$@" && \
+    cmake --build "$MTV3_REPO/cpp/SeeSharp/build-rv1126" -j"$(nproc)"
+}
+mtv3-daemon() { make -C "$MTV3_REPO/board/mtv3-rv1126" "$@"; }
+
+if [ -t 1 ] && [ -n "${PS1:-}" ]; then
+    PS1='\[\e[1;32m\]mtv3-sdk\[\e[0m\]:\w\$ '
+fi

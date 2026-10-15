@@ -107,43 +107,80 @@ YOLO11, следует использовать совместимый одно-
 
 ## Порядок действий
 
-### Сборка SDK в Docker
+### Среда разработки в Docker (`docker/`)
 
-На Windows Docker Desktop всё равно использует WSL2/Hyper-V, но отдельную Linux VM
-создавать и обслуживать не требуется. Для высокой скорости SDK и репозиторий лучше
-хранить внутри файловой системы WSL (`~/proj`), а не на `/mnt/c`.
+Rockchip SDK `rv1126_rv1109_linux_ai_camera_release_20210306` (buildroot 2018.02,
+kernel 4.19, u-boot 2017.09) собирается только на старом хосте: host-пакеты
+buildroot 2018.02 не собираются на glibc >= 2.28, dtc ядра/u-boot ломается на
+gcc >= 10, а wheels RKNN Toolkit 1.6.1 требуют python 3.6. Поэтому образ
+`docker/Dockerfile` основан на **Ubuntu 18.04** и содержит всё, что нужно
+независимо от host-системы (Linux, Windows + WSL2, macOS; на arm64-хостах
+работает через эмуляцию `linux/amd64`, медленно):
 
-Из WSL собрать образ и открыть shell:
+| Что | Чем |
+|---|---|
+| `./build.sh uboot / kernel / rootfs / all / updateimg` | gcc 7.5, python 2.7/3.6, bison/flex/texinfo, fakeroot, genext2fs, i386-библиотеки для rkbin |
+| кросс-сборка SeeSharp и демона | CMake 3.27 (Kitware), ninja, ccache, тулчейн buildroot из SDK в `PATH` |
+| прошивка | `rkdeveloptool` в образе, `upgrade_tool` из SDK; `MTV3_USB=1` |
+| onnx -> rknn | стадия `--rknn`: RKNN Toolkit 1.6.1 (python 3.6, x86_64) |
+
+Файлы: `Dockerfile`, `build-image.sh` (сборка образа), `init-sdk.sh`
+(получение SDK из GitLab `firefly-linux` через `repo`), `import-sdk.sh`
+(распаковка SDK-архива в docker volume), `run-sdk.sh` (shell/команда в контейнере),
+`mtv3-bsp.sh` (overlay/patches платы из репозитория `mtv3-bsp`), `entrypoint.sh`,
+`bashrc.sdk` (функции `sdk`, `sdk-kernel`, `sdk-rootfs`, `sdk-brconfig`,
+`mtv3-cmake`, `mtv3-daemon`). Полное руководство «с нуля» и цикл работы с
+`mtv3-bsp` — в `docs/MTV3_SDK_BUILD_RU.md`.
+
+SDK в образ **не входит**. Он живёт либо в docker volume `mtv3-rv1126-sdk`
+(по умолчанию; на Docker Desktop это единственный быстрый вариант), либо в
+каталоге хоста (`RV1126_SDK=/abs/path`). Домашний каталог контейнера — volume
+`mtv3-rv1126-home` (ccache, история, конфиг git). Место: ~25 ГБ после распаковки,
+~60 ГБ после полной сборки — в docker data-root, а не в `$HOME`.
 
 ```sh
-cd ~/proj/mtv3-vision
-sh board/mtv3-rv1126/docker/build-image.sh
-RV1126_SDK=~/proj/rv1126_sdk_ai \
-  sh board/mtv3-rv1126/docker/run-sdk.sh
+cd mtv3-vision
+sh board/mtv3-rv1126/docker/build-image.sh            # образ mtv3-rv1126-sdk:latest
+sh board/mtv3-rv1126/docker/init-sdk.sh               # SDK из GitLab (repo init/sync), или:
+sh board/mtv3-rv1126/docker/import-sdk.sh \
+   /path/to/rv1126_rv1109_linux_ai_camera_release_20210306.tgz   # из tar-архива, md5 рядом — проверится
+MTV3_BSP=/path/to/mtv3-bsp sh board/mtv3-rv1126/docker/run-sdk.sh   # интерактивный shell
 ```
 
-Внутри контейнера SDK доступен как `/proj/rv1126_sdk_ai`, а этот репозиторий —
-как `/work/mtv3-vision`. Результаты сохраняются непосредственно в примонтированных
-каталогах и не исчезают после удаления контейнера:
+Внутри контейнера SDK доступен как `/proj/rv1126_sdk_ai`, репозиторий — как
+`/work/mtv3-vision`; результаты остаются в volume/каталогах после выхода:
 
 ```sh
-cd /proj/rv1126_sdk_ai
-./build.sh rootfs
+sdk lunch                      # один раз: выбрать defconfig *mtv3*
+sdk uboot && sdk kernel        # пересборка загрузчика и ядра
+sdk rootfs                     # buildroot: rootfs + тулчейн + staging (OpenCV)
+sdk firmware && sdk updateimg  # rockdev/ -> update.img
+sdk-brconfig                   # menuconfig buildroot для defconfig mtv3
 
-cd /work/mtv3-vision
-cmake -S cpp/SeeSharp -B cpp/SeeSharp/build-rv1126 \
-  -DCMAKE_TOOLCHAIN_FILE=/work/mtv3-vision/board/mtv3-rv1126/toolchain-rv1126.cmake \
-  -DMTV3_BOARD=ON
-cmake --build cpp/SeeSharp/build-rv1126 -j"$(nproc)"
+mtv3-cmake                     # SeeSharp -> cpp/SeeSharp/build-rv1126/mainCV
+mtv3-daemon                    # board/mtv3-rv1126/mtv3_cam_daemon
 ```
 
-Запуск одной команды без интерактивного shell:
+Одна команда без интерактивного shell и прошивка по USB (Linux-хост; в WSL2
+устройство пробрасывается через `usbipd`):
 
 ```sh
-RV1126_SDK=~/proj/rv1126_sdk_ai \
-  sh board/mtv3-rv1126/docker/run-sdk.sh \
-  bash -lc 'cd /proj/rv1126_sdk_ai && ./build.sh rootfs'
+sh board/mtv3-rv1126/docker/run-sdk.sh bash -lc 'sdk rootfs'
+MTV3_USB=1 sh board/mtv3-rv1126/docker/run-sdk.sh bash -lc \
+   'rkdeveloptool ld && cd $RV1126_SDK && ./rkflash.sh'   # или upgrade_tool uf rockdev/update.img
 ```
+
+Конвертация моделей внутри той же среды (образ с RKNN Toolkit собирается
+отдельно, ~3 ГБ):
+
+```sh
+sh board/mtv3-rv1126/docker/build-image.sh --rknn
+MTV3_SDK_TAG=rknn sh board/mtv3-rv1126/docker/run-sdk.sh bash -lc \
+   'cd board/mtv3-rv1126 && make yolo-rknn DATASET=/work/mtv3-vision/dataset.txt'
+```
+
+Windows: команды выполнять из WSL2 (Docker Desktop с WSL-бэкендом); репозиторий
+держать в файловой системе WSL (`~/proj`), а не на `/mnt/c`.
 
 1. **Rootfs (defconfig, сборка вне conda).** Python-строки, если добавлялись,
    убрать (`BR2_PACKAGE_PYTHON3`, `BR2_PACKAGE_PYTHON_NUMPY`,
