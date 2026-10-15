@@ -27,7 +27,13 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 # OpenCVConfig.cmake buildroot оставляет только в staging (из target его удаляет)
 set(OpenCV_DIR "${RV1126_OUT}/staging/usr/share/OpenCV")
 
-# librknn_api/rknn_api.h ставятся rknpu-сборкой в "другое" дерево buildroot
-set(RKNN_SYSROOT
-    "${RV1126_SDK}/buildroot/output/host/arm-buildroot-linux-gnueabihf/sysroot"
-    CACHE PATH "sysroot with librknn_api")
+# librknn_api/rknn_api.h: при BR2_PACKAGE_RKNPU=y в defconfig платы (Firefly SDK)
+# rknpu ставит их в staging этой же сборки; в старом дереве они лежали в "другом"
+# output buildroot. Берём staging, если библиотека там есть, иначе старый путь.
+if(EXISTS "${RV1126_OUT}/staging/usr/lib/librknn_api.so")
+    set(RKNN_SYSROOT_DEFAULT "${RV1126_OUT}/staging")
+else()
+    set(RKNN_SYSROOT_DEFAULT
+        "${RV1126_SDK}/buildroot/output/host/arm-buildroot-linux-gnueabihf/sysroot")
+endif()
+set(RKNN_SYSROOT "${RKNN_SYSROOT_DEFAULT}" CACHE PATH "sysroot with librknn_api")

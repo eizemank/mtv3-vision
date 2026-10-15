@@ -35,8 +35,9 @@ httpd: mtv3_httpd
 mtv3_httpd: mtv3_httpd.c
 	$(CC) -O2 -Wall -o $@ $<
 
-# rknpu ставится свежей сборкой в buildroot/output (не в output/rockchip_*):
-RKNN_SYS ?= $(SDK)/buildroot/output/host/arm-buildroot-linux-gnueabihf/sysroot
+# librknn_api: staging этой сборки (BR2_PACKAGE_RKNPU=y, Firefly SDK) либо старое
+# дерево buildroot/output (не в output/rockchip_*):
+RKNN_SYS ?= $(if $(wildcard $(SYSROOT)/usr/lib/librknn_api.so),$(SYSROOT),$(SDK)/buildroot/output/host/arm-buildroot-linux-gnueabihf/sysroot)
 
 rknn: mtv3_rga_rknn
 mtv3_rga_rknn: mtv3_rga_rknn.c

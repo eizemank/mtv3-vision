@@ -129,8 +129,9 @@ gcc >= 10, а wheels RKNN Toolkit 1.6.1 требуют python 3.6. Поэтом�
 (распаковка SDK-архива в docker volume), `run-sdk.sh` (shell/команда в контейнере),
 `mtv3-bsp.sh` (overlay/patches платы из репозитория `mtv3-bsp`), `entrypoint.sh`,
 `bashrc.sdk` (функции `sdk`, `sdk-kernel`, `sdk-rootfs`, `sdk-brconfig`,
-`mtv3-cmake`, `mtv3-daemon`). Полное руководство «с нуля» и цикл работы с
-`mtv3-bsp` — в `docs/MTV3_SDK_BUILD_RU.md`.
+`mtv3-cmake`, `mtv3-daemon`). Справочник по SDK и устройству `mtv3-bsp` — в
+`docs/MTV3_SDK_BUILD_RU.md`; пошаговый полный цикл от клонирования SDK до прошивки,
+ADB и веб-интерфейса — в `docs/MTV3_FROM_SCRATCH_RU.md`.
 
 SDK в образ **не входит**. Он живёт либо в docker volume `mtv3-rv1126-sdk`
 (по умолчанию; на Docker Desktop это единственный быстрый вариант), либо в
